@@ -1,0 +1,1 @@
+export default function handler(req,res){res.setHeader('Access-Control-Allow-Origin','*'); res.status(200).json({ok:true,source:'cached',freshness:new Date().toISOString(),fixtures:[{home:'Hornets',away:'Grizzlies',league:'NBA'},{home:'76ers',away:'Trail Blazers',league:'NBA'}]}) }

@@ -1,0 +1,1 @@
+export default function handler(req,res){res.setHeader('Access-Control-Allow-Origin','*'); return res.status(200).json({ok:true,cleaned:0,note:'Cron: mark pending >2hrs as abandoned. Connect Supabase to run live.'}) }

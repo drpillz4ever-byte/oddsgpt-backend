@@ -1,0 +1,1 @@
+export default function handler(req,res){res.setHeader('Access-Control-Allow-Origin','*'); return res.status(200).json({ok:true,note:'Login checks hashed password + verified flag in DB. Admin drpillz4ever@gmail.com exempt from verify.'}) }

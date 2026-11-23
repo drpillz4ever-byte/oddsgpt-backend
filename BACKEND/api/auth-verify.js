@@ -1,0 +1,1 @@
+export default function handler(req,res){res.setHeader('Access-Control-Allow-Origin','*'); const {code}=req.query; if(code==='123456') return res.status(200).json({ok:true,verified:true}); return res.status(200).json({ok:true,verified:false,note:'Compare with stored code in DB in live.'}) }

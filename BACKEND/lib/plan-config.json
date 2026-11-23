@@ -1,0 +1,82 @@
+{
+  "version": "V70",
+  "rules": {
+    "show_win_chance": false,
+    "deep_search_visible_to_customer": false,
+    "deep_search_backend": "ALL plans use deep search internally",
+    "banger_reminder": "BANGER is for fun, small stake only",
+    "banger_max_per_day": 1
+  },
+  "plans": [
+    {
+      "id": "FREE",
+      "name": "FREE 2",
+      "price_naira": 0,
+      "duration": "Today Only",
+      "normal_slips_per_day": 1,
+      "normal_max_odds": 2,
+      "banger_per_day": 0
+    },
+    {
+      "id": "BANGER",
+      "name": "BANGER",
+      "price_naira": 100,
+      "duration": "Once",
+      "normal_slips_per_day": 0,
+      "banger_per_day": 1,
+      "banger_total": 1,
+      "banger_max_odds": 50,
+      "banger_legs": "15-20"
+    },
+    {
+      "id": "QUICK",
+      "name": "QUICK WIN",
+      "price_naira": 200,
+      "duration": "Once",
+      "normal_slips_per_day": 1,
+      "normal_max_odds": 3,
+      "banger_per_day": 1,
+      "banger_total": 1
+    },
+    {
+      "id": "DAILY",
+      "name": "DAILY HUSTLE",
+      "price_naira": 300,
+      "duration": "24 hours",
+      "normal_slips_per_day": 3,
+      "normal_max_odds": 10,
+      "banger_per_day": 1,
+      "banger_total": 1
+    },
+    {
+      "id": "TRYAM",
+      "name": "TRY AM",
+      "price_naira": 500,
+      "duration": "3 days",
+      "normal_slips_per_day": 3,
+      "normal_max_odds": 10,
+      "banger_per_day": 1,
+      "banger_total": 3
+    },
+    {
+      "id": "SHARP",
+      "name": "SHARP GUY",
+      "price_naira": 2000,
+      "duration": "7 days",
+      "normal_slips_per_day": 5,
+      "normal_max_odds": 20,
+      "banger_per_day": 1,
+      "banger_total": 7
+    },
+    {
+      "id": "BABA",
+      "name": "BABA NLA",
+      "price_naira": 5000,
+      "duration": "30 days",
+      "normal_slips_per_day": 10,
+      "normal_max_odds": 20,
+      "banger_per_day": 1,
+      "banger_total": 30
+    }
+  ]
+}
