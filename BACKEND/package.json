@@ -1,6 +1,6 @@
 {
   "name": "oddsgpt-backend",
-  "version": "70.0.0",
+  "version": "70.0.1",
   "type": "module",
   "engines": {
     "node": "22.x"
