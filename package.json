@@ -1,0 +1,11 @@
+{
+  "name": "oddsgpt-backend",
+  "version": "71.0.1",
+  "type": "module",
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0"
+  }
+}
