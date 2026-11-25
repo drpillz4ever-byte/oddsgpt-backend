@@ -60,3 +60,11 @@ export default function handler(req,res){ if(req.url?.includes('/api/health')) r
 export function historyRule(daysAgo){ if(daysAgo<=7) return 'FULL'; if(daysAgo<=30) return 'SUMMARY'; return 'MONTHLY_COUNT'; }
 export function paymentRecord({userId, plan, amount, paystackRef}){ return { id:'PAY-'+Date.now()+'-'+Math.random().toString(36).slice(2,6).toUpperCase(), userId, plan, amount, paystackRef, createdAt:new Date().toISOString() }; }
 export function countdown(expiresAt){ const ms=new Date(expiresAt)-new Date(); if(ms<=0) return {expired:true, text:'Plan don finish'}; const h=Math.floor(ms/3600000), m=Math.floor(ms%3600000/60000), s=Math.floor(ms%60000/1000); return {expired:false, text:h+'h '+m+'m '+s+'s'}; }
+
+// === YES - LOCKED RULE: FREE SAME FOR ALL, PAID PERSONALISED ===
+// TIME/DATE/DAY: Every user sees same time, date, day header - e.g. Tue 25 Nov 2026, 7:45pm WAT. Games change by 12am.
+// FREE GAMES: SAME for all users. Even if user is on paid plan, they still see same FREE games as everybody else. Seed = date only, no userId.
+// PAID GAMES: DIFFERENT per user (buffet). Seed = userId + date + request. So same request from different paid users gives different games.
+// WHAT CHANGES FOR PAID USER: Only the REST changes - paid slips (Safe, BANGER, custom, Ask AI) are personalised + extra slips. FREE section stays same for all.
+// BACKEND CHANGE: In buildSlip, if plan===FREE use seed = dateStr only. If plan!==FREE use seed = userId+'|'+dateStr+'|'+request.raw
+export function seedFor(plan, userId, dateStr, request){ if(plan==='FREE') return dateStr; return userId+'|'+dateStr+'|'+request.raw; }
