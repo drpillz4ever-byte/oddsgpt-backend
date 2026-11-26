@@ -1,4 +1,4 @@
-// OddsGPT Backend V117 - DAY CHOOSE FEATURE
+// OddsGPT Backend V118 - DAY CHOOSE FEATURE
 // Customer has right to choose day games: 30 odds today alone, 30 odds Tues to Fri, 5 odds for whichever day, default today
 export const PLANS={
  FREE:{price:0,maxOdds:2,maxSlipsPerDay:1,maxLegs:3,days:1,askAI:0,slipsTotal:1},
@@ -148,7 +148,13 @@ export function buildSlip({picks,targetOdds,plan,request,userId='',dateStr=''}){
 
 export default async function handler(req,res){
  res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');if(req.method==='OPTIONS')return res.status(200).end();
- let url=new URL(req.url,'http://x');let path=url.pathname;function needAuth(){return (req.headers.authorization||'').startsWith('Bearer ')};
+ let url=new URL(req.url,'http://x');let path=url.pathname;
+ // V118 FIX: Vercel only has api/index.js, so frontend calls /api/index?endpoint=auth-proxy etc. Use endpoint param as route.
+ let endpointParam=url.searchParams.get('endpoint')||'';
+ if(endpointParam) path='/api/'+endpointParam;
+ // Also support body.action for POST
+ if(req.body && req.body.action && !endpointParam) path='/api/'+req.body.action;
+ function needAuth(){return (req.headers.authorization||'').startsWith('Bearer ')};
  if(path.includes('paystack-verify')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first to pay'});return res.json({ok:true,paymentId:req.body?.paymentId||req.body?.reference,plan:req.body?.plan})}
  if(path.includes('auth-proxy')){
    // Proxy Supabase auth to bypass ISP block of *.supabase.co
@@ -178,5 +184,5 @@ export default async function handler(req,res){
    return res.json({ok:true,...slip})
  }
  if(path.includes('ask-ai')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});return res.json({ok:true,answer:'AI: Based on your wish "'+(req.body?.wish||'')+'" and day '+((req.body?.wish||'')?'parsed as '+(parseDateRange(req.body.wish).label):'Today')+' , I recommend mix. Generate slip to get booking code.'})}
- return res.json({ok:true,version:'V117 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
+ return res.json({ok:true,version:'V118 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
 }
