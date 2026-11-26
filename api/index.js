@@ -133,18 +133,24 @@ export default async function handler(req,res){
         // 3. PRO SCORING - hash by team+date = confidence 62-96, plus market choice by confidence
         function hash(s){ let h=0; for(let c of s) h=(h*31+c.charCodeAt(0))>>>0; return h; }
         // Markets pool with real odds - pro picks best market per game by confidence, not same market for all
-        const MARKETS=[
-          {name:'Over 1.5', odds:1.28, minConf:62},
-          {name:'2nd Half Over 0.5', odds:1.20, minConf:65},
-          {name:'BTTS - Yes', odds:1.75, minConf:78},
-          {name:'Over 2.5', odds:1.85, minConf:82},
-          {name:'Home Win', odds:1.55, minConf:74},
-          {name:'Away Win', odds:1.90, minConf:84},
-          {name:'Over 0.5 1st Half', odds:1.35, minConf:68},
-          {name:'NBA Over 210.5', odds:1.90, minConf:70, nbaOnly:true},
-          {name:'NBA Home Win', odds:1.65, minConf:72, nbaOnly:true},
-          {name:'NBA Over 220.5', odds:1.95, minConf:80, nbaOnly:true},
+        // PRO MARKETS - FREE Safe uses ONLY low-risk markets, no 1.90 Away Win for FREE
+        const SAFE_MARKETS=[
+          {name:'2nd Half Over 0.5', odds:1.20},
+          {name:'Over 1.5 Goals', odds:1.28},
+          {name:'Over 0.5 1st Half', odds:1.35},
+          {name:'Over 1.5 Goals', odds:1.25},
         ];
+        const PRO_MARKETS=[
+          {name:'Over 1.5 Goals', odds:1.28},
+          {name:'2nd Half Over 0.5', odds:1.20},
+          {name:'BTTS - Yes', odds:1.75},
+          {name:'Over 2.5 Goals', odds:1.85},
+          {name:'Home Win', odds:1.55},
+          {name:'Over 0.5 1st Half', odds:1.35},
+          {name:'NBA Over 210.5', odds:1.90, nbaOnly:true},
+          {name:'NBA Home Win', odds:1.65, nbaOnly:true},
+        ];
+        const MARKETS = (plan==='FREE' && (option||'').includes('Safe')) ? SAFE_MARKETS : PRO_MARKETS;
         // Buffet seed: FREE = date only (same for all), paid = user+date+wish
         let seedBase = plan==='FREE' ? today : (userId+'|'+today+'|'+wish+'|'+sport+'|'+option);
         let scored = all.map((f,i)=>{
@@ -164,19 +170,36 @@ export default async function handler(req,res){
           let market = pool[h % pool.length];
           return {f, conf, market};
         }).sort((a,b)=>b.conf-a.conf);
-        // 4. Build slip to hit EXACT target: FREE 1.50-2.00, else use wish odds
-        let targetMin = plan==='FREE'?1.50:1.50;
-        let targetMax = plan==='FREE'?2.00:1000;
-        // Try 2 games, then 3 games, pick combo whose product is in range and highest confidence
+        // 4. Build slip - FREE MUST be 1.50-2.00, search real combos, no 3.08
         let best=null;
-        for(let n of [2,3]){
-          let picks = scored.slice(0,n).map(s=>({home:s.f.home, away:s.f.away, league:s.f.league, sport:s.f.sport, time:s.f.time, market:s.market.name, odds:s.market.odds, confidence:s.conf}));
-          let total = picks.reduce((a,p)=>a*p.odds,1);
-          if(total>=targetMin && total<=targetMax){
-            best={picks, total};
-            if(plan==='FREE') break; // FREE wants 2-3 games, first valid wins
+        if(plan==='FREE'){
+          // Try 2-game combos first (cleaner), then 3-game, from top 20 by confidence
+          let pool = scored.slice(0,20);
+          for(let n of [2,3]){
+            // Try 200 combos for this n, pick first in range with highest avg confidence
+            outer:
+            for(let a=0;a<pool.length;a++){
+              for(let b=a+1;b<pool.length;b++){
+                if(n===2){
+                  let picks=[pool[a],pool[b]].map(s=>({home:s.f.home, away:s.f.away, league:s.f.league, sport:s.f.sport, time:s.f.time, market:s.market.name, odds:s.market.odds, confidence:s.conf}));
+                  let total=picks.reduce((x,p)=>x*p.odds,1);
+                  if(total>=1.50 && total<=2.00){ best={picks,total}; break outer; }
+                } else {
+                  for(let c=b+1;c<pool.length;c++){
+                    let picks=[pool[a],pool[b],pool[c]].map(s=>({home:s.f.home, away:s.f.away, league:s.f.league, sport:s.f.sport, time:s.f.time, market:s.market.name, odds:s.market.odds, confidence:s.conf}));
+                    let total=picks.reduce((x,p)=>x*p.odds,1);
+                    if(total>=1.50 && total<=2.00){ best={picks,total}; break outer; }
+                  }
+                }
+              }
+            }
+            if(best) break;
           }
-          if(!best && n===3) best={picks, total};
+          if(!best) return res.status(200).json({ok:false, noGames:true, date:today, message:'No safe 1.50 - 2.00 combination today. Please try again later.'});
+        } else {
+          let picks = scored.slice(0,3).map(s=>({home:s.f.home, away:s.f.away, league:s.f.league, sport:s.f.sport, time:s.f.time, market:s.market.name, odds:s.market.odds, confidence:s.conf}));
+          let total = picks.reduce((a,p)=>a*p.odds,1);
+          best={picks,total};
         }
         if(!best) return res.status(200).json({ok:false, noGames:true, date:today, message:'No valid combo today for '+option});
         let codeStr = plan+today+best.picks.map(p=>p.home+p.away+p.market).join('')+seedBase;
