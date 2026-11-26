@@ -1,3 +1,4 @@
+
 // OddsGPT Backend AUTH PROXY - api/index.js
 // Frontend calls THIS backend, backend calls Supabase - bypasses ISP blocking supabase.co
 // Set in Vercel Env Vars: SUPABASE_URL, SUPABASE_SERVICE_KEY (service_role, secret - never put in frontend)
@@ -43,3 +44,4 @@ export default async function handler(req,res){
   }
   return res.status(404).json({error:'not found '+pathname});
 }
+
