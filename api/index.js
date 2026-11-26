@@ -2,7 +2,7 @@
 // Frontend calls THIS backend, backend calls Supabase - bypasses ISP blocking supabase.co
 // Set in Vercel Env Vars: SUPABASE_URL, SUPABASE_SERVICE_KEY (service_role, secret - never put in frontend)
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://hsbqkvrvdjpexgsqgsh.supabase.co";
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || "";
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || "";
 export default async function handler(req,res){
   res.setHeader('Access-Control-Allow-Origin','*');
   res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');
