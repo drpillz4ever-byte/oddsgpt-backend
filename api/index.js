@@ -1,5 +1,5 @@
 
-// OddsGPT Backend V121 FINAL - ALL RULES + 18+ + TERMS + BEST PRO
+// OddsGPT Backend V122 LOGIN FIX FINAL - ALL RULES + 18+ + TERMS + BEST PRO
 export const PLANS={
  FREE:{price:0,maxOdds:2,maxSlipsPerDay:1,maxLegs:3,days:1,askAI:0,slipsTotal:1},
  BANGER:{price:100,maxOdds:1000,maxSlipsPerDay:1,maxLegs:20,days:1,askAI:0,slipsTotal:1},
@@ -90,6 +90,9 @@ function buildSlip({wish,plan,sport,dateRange,userId}){
 }
 
 export default async function handler(req,res){
+  // V122: Vercel sometimes gives body as string - parse am
+  try{ if(typeof req.body==='string' && req.body.length){ req.body=JSON.parse(req.body); } }catch(e){}
+
   res.setHeader('Access-Control-Allow-Origin','*');
   res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');
   res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');
@@ -99,7 +102,7 @@ export default async function handler(req,res){
   let endpoint=url.searchParams.get('endpoint')||'';
   if(endpoint) path='/api/'+endpoint;
 
-  if(path.includes('health')||path.includes('ping')) return res.json({ok:true, service:'oddsgpt-backend', version:'V121', time:new Date().toISOString(), date:new Date().toLocaleDateString('en-NG',{timeZone:'Africa/Lagos'}), rules:'FREE changes 12 AM WAT, pool 600, blocked II III U19 U21 U23 Reserves Youth Women, NBA only, 18+ terms tick, Ask AI 300+, Payment ID'});
+  if(path.includes('health')||path.includes('ping')) return res.json({ok:true, service:'oddsgpt-backend', version:'V122', time:new Date().toISOString(), date:new Date().toLocaleDateString('en-NG',{timeZone:'Africa/Lagos'}), rules:'FREE changes 12 AM WAT, pool 600, blocked II III U19 U21 U23 Reserves Youth Women, NBA only, 18+ terms tick, Ask AI 300+, Payment ID'});
 
   if(path.includes('paystack-verify')){
     let pid=req.body?.paymentId||req.body?.reference||'PAY-'+Date.now();
@@ -108,7 +111,7 @@ export default async function handler(req,res){
 
   if(path.includes('auth-proxy')){
     try{
-      let b=req.body||{};
+      let b=req.body||{}; if(b.body && typeof b.body==='string'){ try{b.body=JSON.parse(b.body)}catch(e){} }
       let authPath=b.path||'token?grant_type=password';
       let SUP_KEY=process.env.SUPABASE_ANON_KEY||'sb_publishable_f7FMboSQ_y-7Jxvm0Q8qH2oGp2hIyK';
       let url2='https://hsbqkvrvdjpexgsqgsh.supabase.co/auth/v1/'+authPath;
@@ -127,7 +130,7 @@ export default async function handler(req,res){
 
   if(path.includes('generate-slip')){
     try{
-      let b=req.body||{};
+      let b=req.body||{}; if(b.body && typeof b.body==='string'){ try{b.body=JSON.parse(b.body)}catch(e){} }
       let token=req.headers.authorization||'';
       let userId=b.userId|| (token ? token.slice(-10) : 'anon');
       let result=buildSlip({wish:b.wish||'', plan:b.plan||'FREE', sport:b.sport||'ALL', dateRange:b.dateRange||null, userId:userId});
@@ -136,7 +139,7 @@ export default async function handler(req,res){
   }
 
   if(path.includes('ask-ai')){
-    let b=req.body||{};
+    let b=req.body||{}; if(b.body && typeof b.body==='string'){ try{b.body=JSON.parse(b.body)}catch(e){} }
     let plan=b.plan||'FREE';
     let p=PLANS[plan]||PLANS.FREE;
     if(p.askAI===0) return res.json({ok:false, error:'Ask AI is paid only - from DAILY HUSTLE ₦300 and above: DAILY 1/day, TRY AM 2/day, SHARP 5/day, BABA unlimited. No Ask AI for FREE, BANGER, QUICK WIN'});
