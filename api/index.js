@@ -1,4 +1,4 @@
-// OddsGPT Backend V118 - DAY CHOOSE FEATURE
+// OddsGPT Backend V119 - DAY CHOOSE FEATURE
 // Customer has right to choose day games: 30 odds today alone, 30 odds Tues to Fri, 5 odds for whichever day, default today
 export const PLANS={
  FREE:{price:0,maxOdds:2,maxSlipsPerDay:1,maxLegs:3,days:1,askAI:0,slipsTotal:1},
@@ -147,9 +147,10 @@ export function buildSlip({picks,targetOdds,plan,request,userId='',dateStr=''}){
 }
 
 export default async function handler(req,res){
- res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');if(req.method==='OPTIONS')return res.status(200).end();
+ res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Headers','Content-Type, Authorization');res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');if(req.method==='OPTIONS')return res.status(200).end();
+ if(path.includes('health')||path.includes('ping')) return res.json({ok:true, service:'oddsgpt-backend', version:'V119', time:new Date().toISOString()});
  let url=new URL(req.url,'http://x');let path=url.pathname;
- // V118 FIX: Vercel only has api/index.js, so frontend calls /api/index?endpoint=auth-proxy etc. Use endpoint param as route.
+ // V119 FIX: Vercel only has api/index.js, so frontend calls /api/index?endpoint=auth-proxy etc. Use endpoint param as route.
  let endpointParam=url.searchParams.get('endpoint')||'';
  if(endpointParam) path='/api/'+endpointParam;
  // Also support body.action for POST
@@ -184,5 +185,5 @@ export default async function handler(req,res){
    return res.json({ok:true,...slip})
  }
  if(path.includes('ask-ai')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});return res.json({ok:true,answer:'AI: Based on your wish "'+(req.body?.wish||'')+'" and day '+((req.body?.wish||'')?'parsed as '+(parseDateRange(req.body.wish).label):'Today')+' , I recommend mix. Generate slip to get booking code.'})}
- return res.json({ok:true,version:'V118 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
+ return res.json({ok:true,version:'V119 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
 }
