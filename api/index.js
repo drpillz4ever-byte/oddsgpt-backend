@@ -96,10 +96,101 @@ export default async function handler(req,res){
       if(!r.ok){ const j=await r.json(); return res.status(r.status).json({error:j.msg||'reset failed'}); } return res.status(200).json({ok:true});
     }
 
+
+
+    // === V99 PAYSTACK - Real init + verify. Frontend checks login FIRST, then calls this. ===
+    // Plans: BANGER 100 (1 slip, 24h), QUICK_WIN 200 (2 slips, 24h), DAILY_HUSTLE 300 (1 day), TRY_AM 500 (3 days), SHARP_GUY 2000 (7 days), BABA_NLA 5000 (30 days)
+    if(url.includes('/api/paystack/init') && req.method==='POST'){
+      try{
+        let {email='', plan='', amount=0} = body||{};
+        if(!email) return res.status(400).json({ok:false, error:'Login first — email required'});
+        let planMap={BANGER:{amount:100,days:1}, QUICK_WIN:{amount:200,days:1}, DAILY_HUSTLE:{amount:300,days:1}, TRY_AM:{amount:500,days:3}, SHARP_GUY:{amount:2000,days:7}, BABA_NLA:{amount:5000,days:30}};
+        let p=(plan||'').toUpperCase().replace(/ /g,'_');
+        let cfg=planMap[p];
+        if(!cfg) return res.status(400).json({ok:false, error:'Unknown plan'});
+        if(Number(amount)!==cfg.amount) return res.status(400).json({ok:false, error:'Wrong amount for '+p});
+        if(!process.env.PAYSTACK_SECRET_KEY) return res.status(500).json({ok:false, error:'Paystack not configured in Vercel — add PAYSTACK_SECRET_KEY and PAYSTACK_PUBLIC_KEY'});
+        let ref='ODDSGPT-'+Date.now()+'-'+Math.random().toString(36).slice(2,7).toUpperCase();
+        let r=await fetch('https://api.paystack.co/transaction/initialize',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+process.env.PAYSTACK_SECRET_KEY},body:JSON.stringify({email, amount:cfg.amount*100, reference:ref, callback_url:'https://oddsgpt.com.ng/', metadata:{plan:p, email}})});
+        let j=await r.json();
+        if(!j.status) return res.status(400).json({ok:false, error:j.message||'Paystack init failed'});
+        return res.status(200).json({ok:true, reference:ref, authorization_url:j.data.authorization_url, access_code:j.data.access_code, public_key:process.env.PAYSTACK_PUBLIC_KEY||'', plan:p, amount:cfg.amount, email});
+      }catch(e){ return res.status(500).json({ok:false, error:e.message}); }
+    }
+    if(url.includes('/api/paystack/verify') && req.method==='POST'){
+      try{
+        let {reference='', plan=''} = body||{};
+        if(!reference) return res.status(400).json({ok:false, error:'No reference'});
+        if(!process.env.PAYSTACK_SECRET_KEY) return res.status(500).json({ok:false, error:'Paystack not configured'});
+        let r=await fetch('https://api.paystack.co/transaction/verify/'+encodeURIComponent(reference),{headers:{'Authorization':'Bearer '+process.env.PAYSTACK_SECRET_KEY}});
+        let j=await r.json();
+        if(!j.status || j.data?.status!=='success') return res.status(400).json({ok:false, error:'Payment not confirmed yet — if you were debited, use Help / Complaint box with your reference '+reference});
+        let p=((plan||j.data?.metadata?.plan||'').toUpperCase().replace(/ /g,'_'));
+        let daysMap={BANGER:1, QUICK_WIN:1, DAILY_HUSTLE:1, TRY_AM:3, SHARP_GUY:7, BABA_NLA:30};
+        let days=daysMap[p]||1;
+        let expiry=Date.now()+days*24*60*60*1000;
+        let payId='PAY-'+Date.now()+'-'+Math.random().toString(36).slice(2,6).toUpperCase();
+        return res.status(200).json({ok:true, plan:p, expiry, paymentId:payId, reference, amount:(j.data?.amount||0)/100, email:j.data?.customer?.email||''});
+      }catch(e){ return res.status(500).json({ok:false, error:e.message}); }
+    }
+
+    // === V98 FREE TODAY - Fixed slip, SAME for all FREE users, cannot be changed by wish/sport/option ===
+    // Frontend calls this on load for FREE / logged-out users. No plan check, no userId needed.
+    // Deterministic: seed = today's date, so every FREE user gets identical picks today, new picks at 12am.
+    if(url.includes('/api/free-today') && (req.method==='GET' || req.method==='POST')){
+      try{
+        let today = new Date().toISOString().slice(0,10);
+        // Reuse same fetch logic as /api/generate by falling through: we set plan to FREE_FIXED and wish to '' and skip the FREE block above
+        // To keep it simple and identical for all, we handle it here with its own fetch:
+        let fixtures = [];
+        try{
+          let rf = await fetch('https://v3.football.api-sports.io/fixtures?date='+today, {headers:{'x-apisports-key': process.env.API_FOOTBALL_KEY||''}});
+          let rj = await rf.json();
+          (rj.response||[]).forEach(x=>{ fixtures.push({home:x.teams?.home?.name||'', away:x.teams?.away?.name||'', league:x.league?.name||'', sport:'Football', time:x.fixture?.date||''}); });
+        }catch(e){}
+        try{
+          let rb = await fetch('https://v1.basketball.api-sports.io/games?date='+today, {headers:{'x-apisports-key': process.env.API_BASKETBALL_KEY||''}});
+          let bj = await rb.json();
+          (bj.response||[]).forEach(x=>{ fixtures.push({home:x.teams?.home?.name||'', away:x.teams?.away?.name||'', league:x.league?.name||'', sport:'Basketball', time:x.date||''}); });
+        }catch(e){}
+        // Filter: block junior/reserve/women/academy/NCAA/G League/college, same as generate
+        let blocked = (lg)=>{ let l=(lg||'').toLowerCase(); return l.includes('ncaa')||l.includes('g league')||l.includes('gleague')||l.includes('college')||l.includes('u19')||l.includes('u21')||l.includes('u23')||l.includes('reserve')||l.includes('academy')||l.includes('women')||l.includes('junior')||l.includes(' youth')||l.includes(' ii')||l.includes(' iii')||l.includes('high school')||l.includes('development'); };
+        fixtures = fixtures.filter(f=> f.home && f.away && !blocked(f.league));
+        if(!fixtures.length) return res.status(200).json({ok:true, plan:'FREE', date:today, sport:'Mix', option:'Safe 2 odds', picks:[], totalOdds:0, code:'', noGames:true, message:'No safe 1.50-2.00 combination today.'});
+        // Deterministic pick: sort by date-seeded hash so ALL users get SAME 3 games today
+        let seed = 0; for(let c of today) seed = (seed*31 + c.charCodeAt(0))>>>0;
+        let hash = (s)=>{ let h=seed; for(let ch of s) h=(h*31 + ch.charCodeAt(0))>>>0; return h; };
+        let scored = fixtures.map(f=>{
+          let h = hash(f.home+'|'+f.away+'|'+f.league);
+          let conf = 62 + (h % 32); // 62-93, deterministic for today
+          let market, odds;
+          if(f.sport==='Basketball'){ let pools=[{name:'Over 140.5 Total Points',odds:1.75},{name:'Over 145.5 Total Points',odds:1.80},{name:'Home Win',odds:1.55},{name:'Over 150.5 Total Points',odds:1.90}]; let m=pools[h%pools.length]; market=m.name; odds=m.odds; }
+          else { let pools=[{name:'Over 1.5 Goals',odds:1.28},{name:'2nd Half Over 0.5 Goals',odds:1.20},{name:'Over 0.5 Goals 1st Half',odds:1.35},{name:'Over 1.5 Goals',odds:1.25}]; let m=pools[h%pools.length]; market=m.name; odds=m.odds; }
+          return {...f, market, odds, confidence:conf, _h:h};
+        });
+        // Pick best combination: try to hit 1.50-2.00 with max 3 games, deterministic order by confidence desc then hash
+        scored.sort((a,b)=> b.confidence - a.confidence || a._h - b._h);
+        let picks=[]; let total=1;
+        for(let s of scored){ if(picks.length>=3) break; if(total*s.odds>2.00 && picks.length>=1) continue; picks.push({home:s.home, away:s.away, league:s.league, sport:s.sport, market:s.market, odds:s.odds, confidence:s.confidence}); total*=s.odds; }
+        if(!picks.length || total<1.50 || total>2.00){
+          // Fallback: take top 2, if still out of range, return noGames rather than forcing wrong odds
+          if(total<1.50 || total>2.00) return res.status(200).json({ok:true, plan:'FREE', date:today, sport:'Mix', option:'Safe 2 odds', picks:[], totalOdds:0, code:'', noGames:true, message:'No safe 1.50-2.00 combination today.'});
+        }
+        // Booking code: same for all FREE today (deterministic from date) - inside slip only, not advertised
+        let code = 'FREE-'+today.replaceAll('-','')+'-'+String(seed%9000+1000);
+        return res.status(200).json({ok:true, plan:'FREE', date:today, sport:'Mix', option:'Safe 2 odds', picks, totalOdds:Number(total.toFixed(2)), code, source:'free-today-fixed', count:fixtures.length, fixed:true});
+      }catch(e){ return res.status(200).json({ok:false, error:e.message}); }
+    }
+
     // === V87 TODAY ONLY - API-FOOTBALL + BASKETBALL, NO FALLBACK, MIX BY CONFIDENCE ===
     if(url.includes('/api/generate') && req.method==='POST'){
       try{
         const {plan='FREE', wish='', userId='', sport='Mix', option='Safe 2 odds'} = body;
+        // === V98 RULE: Generate Slip is PAID ONLY. FREE has no Generate Slip, no wish, no change. ===
+        // FREE users get their fixed slip from /api/free-today only. If anyone calls /api/generate as FREE, block it.
+        if((plan||'FREE').toUpperCase()==='FREE'){
+          return res.status(403).json({ok:false, error:'Generate Slip is for paid plans only. Your FREE slip for today is already shown below — same for all FREE members, 1.50-2.00 odds, max 3 games.', code:'FREE_NO_GENERATE'});
+        }
         // === PAID CUSTOMER WISH - read how he wants it in football + basketball ===
         // e.g. "basketball only, over 1.5" / "football only, BTTS" / "mix football + basketball, BANGER" / "no basketball, football only"
         let wantSport = sport, wantOption = option;
