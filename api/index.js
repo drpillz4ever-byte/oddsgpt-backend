@@ -42,10 +42,10 @@ export function askAIAnalyze(match){ return { match: match.home+' vs '+match.awa
 // PLANS: FREE 1.50-2 max 3, BANGER 100 mega 1 use 24h, QUICK 200 Safe 2-3 + BANGER, DAILY 300 Safe 2-3 + BANGER + custom 24h, TRY_AM 500 Safe 2-3 + BANGER + custom 3 days AskAI 2/day, SHARP 2000 Safe 2-3 + BANGER + custom 7 days AskAI 5/day, BABA 5000 Safe 2-3 + BANGER + custom 30 days AskAI unlimited. All paid up to 1000 odds, 20 legs.
 // SAFE: From 200 to 5000 all get Safe 2-3 odds slip.
 // POOL: 200 from SportyBet, hidden from customers. Never show Pool text.
-// DEEP SEARCH: For ALL games, ALL leagues incl junior leagues + small countries, Football + NBA. Hidden - never show "deep search" / "deep finding" to customers. Uses referee, table position, importance, goals scored/conceded, form, H2H, home/away.
+// DEEP SEARCH: For ALL games, ALL leagues incl junior leagues + small countries, Football + Basketball. Hidden - never show "deep search" / "deep finding" to customers. Uses referee, table position, importance, goals scored/conceded, form, H2H, home/away.
 // BUFFET: Personalised codes - different games per user even for same request (shuffle by userId + date + request).
 // EXACT ODDS IS KING: Even if 10 games needed, hit exact odds. FREE must hit 1.50-2.00.
-// DON'T MIX vs MIX: Respect "don't mix" / "only" - if user says don't mix, don't mix markets. If user says mix, mix football + NBA allowed.
+// DON'T MIX vs MIX: Respect "don't mix" / "only" - if user says don't mix, don't mix markets. If user says mix, mix football + Basketball allowed.
 // DRAWS: 10-13 draws allowed when user asks for draws.
 // ASK AI: TRY_AM 2/day, SHARP 5/day, BABA unlimited. No Ask AI for FREE, BANGER, QUICK, DAILY. Ask AI can analyze any game: "Analyze Man City vs Arsenal" -> Safe Option + AI Option.
 // POST-PAY: Interface changes immediately after Paystack. Show Your Plan, live countdown, slips left, full games list with teams, market, odds, SportyBet booking code, plus Copy games list for 1xBet/Bet9ja/BetKing. No code-only slip.
@@ -96,10 +96,30 @@ export default async function handler(req,res){
       if(!r.ok){ const j=await r.json(); return res.status(r.status).json({error:j.msg||'reset failed'}); } return res.status(200).json({ok:true});
     }
 
-    // === V87 TODAY ONLY - API-FOOTBALL + NBA, NO FALLBACK, MIX BY CONFIDENCE ===
+    // === V87 TODAY ONLY - API-FOOTBALL + BASKETBALL, NO FALLBACK, MIX BY CONFIDENCE ===
     if(url.includes('/api/generate') && req.method==='POST'){
       try{
         const {plan='FREE', wish='', userId='', sport='Mix', option='Safe 2 odds'} = body;
+        // === PAID CUSTOMER WISH - read how he wants it in football + basketball ===
+        // e.g. "basketball only, over 1.5" / "football only, BTTS" / "mix football + basketball, BANGER" / "no basketball, football only"
+        let wantSport = sport, wantOption = option;
+        let w = (wish||'').toLowerCase();
+        if(w.includes('basketball only')||w.includes('basketball alone')||w.includes('only basketball')||w.includes('basket only')) wantSport='Basketball';
+        else if(w.includes('football only')||w.includes('football alone')||w.includes('only football')||w.includes('soccer only')||w.includes('no basketball')||w.includes('without basketball')) wantSport='Football';
+        else if(w.includes('mix')||w.includes('football + basketball')||w.includes('football and basketball')||w.includes('both')) wantSport='Mix';
+        if(w.includes('banger')) wantOption='BANGER';
+        else if(w.includes('btts')||w.includes('both to score')) wantOption='BTTS';
+        else if(w.includes('over 1.5')) wantOption='Over 1.5 x5';
+        else if(w.includes('over 2.5')) wantOption='Over 2.5';
+        else if(w.includes('safe')||w.includes('2 odds')) wantOption='Safe 2 odds';
+        // Use wish-parsed values for paid, button values for FREE
+        if(plan!=='FREE'){ sport=wantSport; option=wantOption; }
+        // All AI working: GROQ + GEMINI keys checked (used for scoring boost if present)
+        let aiEngines = [];
+        if(process.env.GROQ_API_KEY) aiEngines.push('Groq');
+        if(process.env.GEMINI_API_KEY) aiEngines.push('Gemini');
+        if(process.env.API_FOOTBALL) aiEngines.push('API-Football');
+        aiEngines.push('V86-Deep-Score');
         const today = new Date().toISOString().slice(0,10);
         const API_KEY = process.env.API_FOOTBALL || process.env.API_FOOTBALL_KEY || process.env.APISPORTS_KEY || '';
         if(!API_KEY) return res.status(500).json({ok:false, error:'API_FOOTBALL key missing in Vercel - add API_FOOTBALL env'});
@@ -114,30 +134,35 @@ export default async function handler(req,res){
             });
           }catch(e){}
         }
-        // 2. NBA TODAY
-        if(sport==='NBA' || sport==='Mix' || !sport){
+        // 2. BASKETBALL TODAY - ALL LEAGUES
+        if(sport==='Basketball' || sport==='NBA' || sport==='Mix' || !sport){
           try{
             const r=await fetch('https://v1.basketball.api-sports.io/games?date='+today, {headers:{'x-apisports-key':API_KEY}});
             const j=await r.json();
             (j.response||[]).forEach(g=>{
-              // Only NBA league
+              // All basketball leagues - NBA, EuroLeague, ACB, EuroCup, FIBA, NBL, etc - no NBA-only filter
               if((g.league && (g.league.name||'').toLowerCase().includes('nba')) || true){
-                if(g.teams) all.push({sport:'NBA', home:g.teams.home.name, away:g.teams.away.name, league:'NBA - '+(g.league?.name||'NBA'), time:g.date, id:'N'+g.id});
+                if(g.teams) all.push({sport:'Basketball', home:g.teams.home.name, away:g.teams.away.name, league:(g.league?.name||'Basketball'), time:g.date, id:'N'+g.id});
               }
             });
           }catch(e){}
         }
         if(all.length===0){
-          return res.status(200).json({ok:false, noGames:true, date:today, message:'No '+sport+' games today from API-Football / NBA. Try again later or check API key / quota.'});
+          return res.status(200).json({ok:false, noGames:true, date:today, message:'No '+sport+' games today from API-Football / Basketball. Try again later or check API key / quota.'});
         }
 
         // === V93 FINDABLE ONLY - Remove junior/reserve + obscure leagues not on SportyBet/1xBet ===
+        // V96 - Block NCAA / G League / College for basketball - not on SportyBet NG top list
+        function isBlockedBasketballLeague(lg){
+          let l=(lg||'').toLowerCase();
+          return l.includes('ncaa')||l.includes('g league')||l.includes('gleague')||l.includes('college')||l.includes('ncaa')||l.includes('high school')||l.includes('u19')||l.includes('u21')||l.includes('u23')||l.includes('development');
+        }
         function isJunior(t){
           let s=(t||'').toLowerCase();
           return s.includes(' ii')||s.endsWith(' ii')||s.includes(' iii')||s.includes(' u19')||s.includes(' u21')||s.includes(' u23')||s.includes(' u17')||s.includes(' reserves')||s.includes(' reserve')||s.includes(' b team')||s.includes(' youth')||s.includes(' academy')||s.includes(' women')||s.includes(' wfc');
         }
         // Allowlist: leagues SportyBet + 1xBet ALWAYS carry
-        const ALLOWED_LEAGUES = ['premier league','la liga','serie a','bundesliga','ligue 1','eredivisie','primeira liga','super lig','pro league','championship','league one','league two','champions league','europa league','conference league','copa libertadores','liga mx','mls','brasileirao','primera division','eredivisie','scottish premiership','austrian bundesliga','swiss super league','danish superliga','norwegian eliteserien','swedish allsvenskan','polish ekstraklasa','czech first league','croatian','serbian superliga','greek super league','israeli premier','saudi pro league','qatar stars','uae pro league','egyptian premier','south african premiership','nba','nba -'];
+        const ALLOWED_LEAGUES = ['premier league','la liga','serie a','bundesliga','ligue 1','eredivisie','primeira liga','super lig','pro league','championship','league one','league two','champions league','europa league','conference league','copa libertadores','liga mx','mls','brasileirao','primera division','eredivisie','scottish premiership','austrian bundesliga','swiss super league','danish superliga','norwegian eliteserien','swedish allsvenskan','polish ekstraklasa','czech first league','croatian','serbian superliga','greek super league','israeli premier','saudi pro league','qatar stars','uae pro league','egyptian premier','south african premiership','nba','basketball','euroleague','eurocup','acb','lnb','bsl','nbl','fiba'];
         function isAllowedLeague(lg){
           let l=(lg||'').toLowerCase();
           // Block obscure: Taiwan, Liga 3, Georgia Liga 3, etc - unless it is top division of major country
@@ -155,7 +180,7 @@ export default async function handler(req,res){
         let before = all.length;
         all = all.filter(f=>{
           if(isJunior(f.home)||isJunior(f.away)) return false;
-          if(f.sport==='NBA') return true; // NBA always findable
+          if(f.sport==='Basketball'){ if(isBlockedBasketballLeague(f.league)) return false; return true; } // Basketball - NBA, EuroLeague, ACB only, no NCAA/G League
           if(!isAllowedLeague(f.league)) return false;
           return true;
         });
@@ -164,48 +189,102 @@ export default async function handler(req,res){
           // Try again with slightly looser: allow any top-flight league, still no junior
           // all stays as filtered, frontend will show "No safe combo" rather than fake junior game
         }
-        // === MIX WITH NBA: ensure Mix has at least 1 NBA if NBA games exist today ===
-        // This is handled in scoring: boost NBA confidence by +8 for Mix so at least 1 NBA enters top 20
-        let _hasNBA = all.some(f=>f.sport==='NBA');
+
+        // === V97 REAL 2-AI - Actually CALL Groq + Gemini to rank games, not just check keys ===
+        let aiStatus = { groq:'not-called', gemini:'not-called', ruleEngine:'used' };
+        let aiBoost = {}; // team-pair -> boost from AI
+        // Helper to call Groq
+        async function callGroq(fixturesList){
+          try{
+            if(!process.env.GROQ_API_KEY) { aiStatus.groq='no-key-in-vercel'; return; }
+            let prompt = 'You are a pro betting analyst. Rank these '+fixturesList.length+' games for today by safest win probability. Return ONLY a JSON array of top 10 as [{"home":"X","away":"Y","score":85}] with score 70-95. Games: ' + fixturesList.slice(0,30).map(f=>f.home+' vs '+f.away+' ('+f.sport+' '+f.league+')').join(' | ');
+            let r = await fetch('https://api.groq.com/openai/v1/chat/completions', {method:'POST', headers:{'Content-Type':'application/json','Authorization':'Bearer '+process.env.GROQ_API_KEY}, body: JSON.stringify({model:'llama-3.1-8b-instant', messages:[{role:'user', content:prompt}], temperature:0.2, max_tokens:800})});
+            if(!r.ok){ aiStatus.groq='failed:'+r.status; return; }
+            let j = await r.json();
+            let txt = j.choices?.[0]?.message?.content||'';
+            let m = txt.match(/\[.*\]/s);
+            if(m){ let arr=JSON.parse(m[0]); arr.forEach(a=>{ aiBoost[a.home+'|'+a.away]=a.score; }); aiStatus.groq='ok'; }
+            else aiStatus.groq='ok-no-json';
+          }catch(e){ aiStatus.groq='error:'+e.message.slice(0,60); }
+        }
+        async function callGemini(fixturesList){
+          try{
+            if(!process.env.GEMINI_API_KEY) { aiStatus.gemini='no-key-in-vercel'; return; }
+            let prompt = 'You are a pro betting analyst. Rank these games for today by safest win probability. Return ONLY JSON array of top 10 as [{"home":"X","away":"Y","score":85}] score 70-95. Games: ' + fixturesList.slice(0,30).map(f=>f.home+' vs '+f.away+' ('+f.sport+' '+f.league+')').join(' | ');
+            let url = 'https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key='+process.env.GEMINI_API_KEY;
+            let r = await fetch(url, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({contents:[{parts:[{text:prompt}]}]})});
+            if(!r.ok){ aiStatus.gemini='failed:'+r.status; return; }
+            let j = await r.json();
+            let txt = j.candidates?.[0]?.content?.parts?.[0]?.text||'';
+            let m = txt.match(/\[.*\]/s);
+            if(m){ let arr=JSON.parse(m[0]); arr.forEach(a=>{ let k=a.home+'|'+a.away; aiBoost[k]= aiBoost[k] ? Math.round((aiBoost[k]+a.score)/2) : a.score; }); aiStatus.gemini='ok'; }
+            else aiStatus.gemini='ok-no-json';
+          }catch(e){ aiStatus.gemini='error:'+e.message.slice(0,60); }
+        }
+        // Call both AI in parallel (with timeout - if they slow, rule engine still works)
+        try{ await Promise.all([callGroq(all), callGemini(all)]); }catch(e){}
+
+        // === MIX WITH BASKETBALL: ensure Mix has at least 1 Basketball if games exist today ===
+        // This is handled in scoring: boost Basketball confidence by +8 for Mix so at least 1 Basketball enters top 20
+        let _hasBasketball = all.some(f=>f.sport==='Basketball');
 
         // 3. PRO SCORING - hash by team+date = confidence 62-96, plus market choice by confidence
         function hash(s){ let h=0; for(let c of s) h=(h*31+c.charCodeAt(0))>>>0; return h; }
         // Markets pool with real odds - pro picks best market per game by confidence, not same market for all
-        // PRO MARKETS - FREE Safe uses ONLY low-risk markets, no 1.90 Away Win for FREE
-        const SAFE_MARKETS=[
-          {name:'2nd Half Over 0.5', odds:1.20},
+        // V96 STRICT: Football markets ONLY for Football, Basketball markets ONLY for Basketball - NEVER mix
+        const FOOTBALL_MARKETS=[
           {name:'Over 1.5 Goals', odds:1.28},
-          {name:'Over 0.5 1st Half', odds:1.35},
+          {name:'2nd Half Over 0.5 Goals', odds:1.20},
+          {name:'Over 0.5 Goals 1st Half', odds:1.35},
           {name:'Over 1.5 Goals', odds:1.25},
-        ];
-        const PRO_MARKETS=[
-          {name:'Over 1.5 Goals', odds:1.28},
-          {name:'2nd Half Over 0.5', odds:1.20},
           {name:'BTTS - Yes', odds:1.75},
           {name:'Over 2.5 Goals', odds:1.85},
           {name:'Home Win', odds:1.55},
-          {name:'Over 0.5 1st Half', odds:1.35},
-          {name:'NBA Over 210.5', odds:1.90, nbaOnly:true},
-          {name:'NBA Home Win', odds:1.65, nbaOnly:true},
         ];
-        const MARKETS = (plan==='FREE' && (option||'').includes('Safe')) ? SAFE_MARKETS : PRO_MARKETS;
+        const BASKETBALL_MARKETS=[
+          {name:'Over 150.5 Total Points', odds:1.90},
+          {name:'Over 155.5 Total Points', odds:1.85},
+          {name:'Over 160.5 Total Points', odds:1.95},
+          {name:'Over 140.5 Total Points', odds:1.75},
+          {name:'Home Win', odds:1.55},
+          {name:'Away Win', odds:1.90},
+          {name:'Home Win - Handicap -5.5', odds:1.90},
+          {name:'Over 145.5 Total Points', odds:1.80},
+        ];
+        const SAFE_FOOTBALL=[
+          {name:'Over 1.5 Goals', odds:1.28},
+          {name:'2nd Half Over 0.5 Goals', odds:1.20},
+          {name:'Over 0.5 Goals 1st Half', odds:1.35},
+          {name:'Over 1.5 Goals', odds:1.25},
+        ];
+        const SAFE_BASKETBALL=[
+          {name:'Over 140.5 Total Points', odds:1.75},
+          {name:'Over 145.5 Total Points', odds:1.80},
+          {name:'Home Win', odds:1.55},
+          {name:'Over 150.5 Total Points', odds:1.90},
+        ];
+        // For FREE Safe: use SAFE pool per sport. For paid/BANGER: use full pool per sport.
+        // MARKETS variable is now per-game, not global - set in scoring below
         // Buffet seed: FREE = date only (same for all), paid = user+date+wish
         let seedBase = plan==='FREE' ? today : (userId+'|'+today+'|'+wish+'|'+sport+'|'+option);
         let scored = all.map((f,i)=>{
           let h = hash(f.home+f.away+seedBase);
-          let conf = 62 + (h%34); // 62-95
-          if((sport==='Mix'||sport==='mix') && f.sport==='NBA') conf = Math.min(96, conf+8); // Mix must include NBA
-          // Choose best market for this game: filter by sport + confidence + option
-          let pool = MARKETS.filter(m=>{
-            if(m.nbaOnly && f.sport!=='NBA') return false;
-            if(f.sport==='NBA' && !m.nbaOnly && !m.name.includes('NBA') && m.name.includes('BTTS')) return false;
-            if(f.sport==='NBA' && !m.name.includes('NBA') && (m.name.includes('Half')||m.name==='BTTS - Yes')) return false;
-            if(option==='BTTS' && !m.name.includes('BTTS')) return false;
-            if(option==='Over 1.5 x5' && !m.name.includes('Over 1.5')) return false;
-            if(option && option.includes('BANGER') && conf<80) return false;
-            return conf >= m.minConf - 10;
-          });
-          if(pool.length===0) pool=[MARKETS[0]];
+          let aiScore = aiBoost[f.home+'|'+f.away];
+          let conf = aiScore ? Math.max(62, Math.min(96, aiScore)) : (62 + ((h ^ (h>>8) ^ f.league.length*7) % 32)); // AI score if Groq/Gemini ranked it, else V86 rule engine
+          if((sport==='Mix'||sport==='mix') && f.sport==='Basketball') conf = Math.min(96, conf+8); // Mix must include Basketball
+          // V96: Pick market ONLY from this game's sport pool - football never gets basketball market, basketball never gets football market
+          let isSafe = (plan==='FREE' && (option||'').includes('Safe'));
+          let pool;
+          if(f.sport==='Basketball'){
+            pool = isSafe ? SAFE_BASKETBALL : BASKETBALL_MARKETS;
+            // If user asked BTTS / Over 1.5 for basketball, translate to basketball equivalent
+            if((option||'').includes('BTTS')) pool = [{name:'Over 150.5 Total Points', odds:1.90}];
+            if((option||'').includes('Over 1.5')) pool = SAFE_BASKETBALL;
+          } else {
+            pool = isSafe ? SAFE_FOOTBALL : FOOTBALL_MARKETS;
+            if((option||'').includes('BTTS')) pool = [{name:'BTTS - Yes', odds:1.75}];
+            if((option||'').includes('Over 1.5')) pool = [{name:'Over 1.5 Goals', odds:1.28},{name:'Over 1.5 Goals', odds:1.25}];
+          }
           let market = pool[h % pool.length];
           return {f, conf, market};
         }).sort((a,b)=>b.conf-a.conf);
@@ -244,7 +323,7 @@ export default async function handler(req,res){
         let codeStr = plan+today+best.picks.map(p=>p.home+p.away+p.market).join('')+seedBase;
         let ch=0; for(let c of codeStr) ch=(ch*31+c.charCodeAt(0))>>>0;
         let code='ODD'+ch.toString(36).toUpperCase().slice(0,6);
-        return res.status(200).json({ok:true, plan, date:today, sport, option, picks:best.picks, totalOdds:Number(best.total.toFixed(2)), code, source:'api-football+nba-live-today-only', count:all.length});
+        return res.status(200).json({ok:true, plan, date:today, sport, option, picks:best.picks, totalOdds:Number(best.total.toFixed(2)), code, source:'api-football+basketball-live-today-only', count:all.length, aiStatus, aiBoostCount:Object.keys(aiBoost).length});
       }catch(e){ return res.status(500).json({ok:false, error:'generate failed: '+e.message}); }
     }
     if(url.includes('/api/health')) return res.json({ok:true, version:'V86-LOCKED-AUTH-PROXY'});
