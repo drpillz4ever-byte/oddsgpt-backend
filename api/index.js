@@ -1,4 +1,4 @@
-// OddsGPT Backend V112 - DAY CHOOSE FEATURE
+// OddsGPT Backend V113 - DAY CHOOSE FEATURE
 // Customer has right to choose day games: 30 odds today alone, 30 odds Tues to Fri, 5 odds for whichever day, default today
 export const PLANS={
  FREE:{price:0,maxOdds:2,maxSlipsPerDay:1,maxLegs:3,days:1,askAI:0,slipsTotal:1},
@@ -166,5 +166,5 @@ export default async function handler(req,res){
    return res.json({ok:true,...slip})
  }
  if(path.includes('ask-ai')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});return res.json({ok:true,answer:'AI: Based on your wish "'+(req.body?.wish||'')+'" and day '+((req.body?.wish||'')?'parsed as '+(parseDateRange(req.body.wish).label):'Today')+' , I recommend mix. Generate slip to get booking code.'})}
- return res.json({ok:true,version:'V112 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
+ return res.json({ok:true,version:'V113 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
 }
