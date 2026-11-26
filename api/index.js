@@ -1,5 +1,5 @@
 
-// OddsGPT Backend V136 - 2 AI + API Football + Basketball + 600 Pool - ESM api/index.js
+// OddsGPT Backend V137 - 2 AI + API Football + Basketball + 600 Pool - ESM api/index.js
 // Env: API_FOOTBALL_KEY, API_BASKETBALL_KEY, GEMINI_API_KEY, GROQ_API_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, SUPABASE_URL, SUPABASE_KEY, ADMIN_EMAIL
 const PLANS = {
   FREE:{price:0, maxOdds:2.00, minOdds:1.50, maxGames:3, slipsPerDay:1, days:1, askAI:0, label:'FREE'},
@@ -21,29 +21,45 @@ async function supabaseUpsert(table,row){ try{ if(!process.env.SUPABASE_URL||!pr
 // --- POOL 600: 300 Football + 300 Basketball ---
 async function fetchFootballPool(){
   let out=[]; try{
-    if(!process.env.API_FOOTBALL_KEY) return {games:[], status:'NO_KEY'};
-    let r=await fetch('https://v3.football.api-sports.io/fixtures?date='+todayWAT(),{headers:{'x-apisports-key':process.env.API_FOOTBALL_KEY}});
-    let j=await r.json().catch(()=>null);
-    (j?.response||[]).forEach(f=>{
-      let league=f.league?.name||''; let home=f.teams?.home?.name||''; let away=f.teams?.away?.name||'';
-      if(isBlocked(league+' '+home+' '+away)) return;
-      out.push({sport:'football', home, away, league, time:f.fixture?.date, fixtureId:f.fixture?.id});
-    });
-    return {games:out.slice(0,300), status:'OK', total:j?.results||out.length};
+    let fkey = process.env.API_FOOTBALL_KEY || process.env.API_BASKETBALL_KEY;
+    if(!fkey) return {games:[], status:'NO_KEY'};
+    // V137 - Fetch today + tomorrow + next 2 days to reach 600 pool (today alone na only 134)
+    for(let d=0; d<4; d++){
+      let date=new Date(); date.setDate(date.getDate()+d); let ds=date.toISOString().slice(0,10);
+      try{
+        let r=await fetch('https://v3.football.api-sports.io/fixtures?date='+ds,{headers:{'x-apisports-key':fkey}});
+        let j=await r.json().catch(()=>null);
+        (j?.response||[]).forEach(f=>{
+          let league=f.league?.name||''; let home=f.teams?.home?.name||''; let away=f.teams?.away?.name||'';
+          if(isBlocked(league+' '+home+' '+away)) return;
+          if(out.some(x=>x.fixtureId===f.fixture?.id)) return;
+          out.push({sport:'football', home, away, league, time:f.fixture?.date, fixtureId:f.fixture?.id, date:ds});
+        });
+      }catch(e){}
+      if(out.length>=300) break;
+    }
+    return {games:out.slice(0,300), status:'OK', total:out.length};
   }catch(e){ return {games:[], status:'ERROR '+e.message}; }
 }
 async function fetchBasketballPool(){
   let out=[]; try{
-    if(!process.env.API_BASKETBALL_KEY) return {games:[], status:'NO_KEY'};
-    let r=await fetch('https://v1.basketball.api-sports.io/games?date='+todayWAT(),{headers:{'x-apisports-key':process.env.API_BASKETBALL_KEY}});
-    let j=await r.json().catch(()=>null);
-    (j?.response||[]).forEach(g=>{
-      let league=g.league?.name||''; let home=g.teams?.home?.name||''; let away=g.teams?.away?.name||'';
-      // NCAA Basketball only - block G League, College other
-      if(isBlocked(league+' '+home+' '+away)) return;
-      out.push({sport:'basketball', home, away, league, time:g.date, fixtureId:g.id});
-    });
-    return {games:out.slice(0,300), status:'OK', total:j?.results||out.length};
+    let bkey = process.env.API_BASKETBALL_KEY || process.env.API_FOOTBALL_KEY;
+    if(!bkey) return {games:[], status:'NO_KEY'};
+    for(let d=0; d<4; d++){
+      let date=new Date(); date.setDate(date.getDate()+d); let ds=date.toISOString().slice(0,10);
+      try{
+        let r=await fetch('https://v1.basketball.api-sports.io/games?date='+ds,{headers:{'x-apisports-key':bkey}});
+        let j=await r.json().catch(()=>null);
+        (j?.response||[]).forEach(g=>{
+          let league=g.league?.name||''; let home=g.teams?.home?.name||''; let away=g.teams?.away?.name||'';
+          if(isBlocked(league+' '+home+' '+away)) return;
+          if(out.some(x=>x.fixtureId===g.id)) return;
+          out.push({sport:'basketball', home, away, league, time:g.date, fixtureId:g.id, date:ds});
+        });
+      }catch(e){}
+      if(out.length>=300) break;
+    }
+    return {games:out.slice(0,300), status:'OK', total:out.length};
   }catch(e){ return {games:[], status:'ERROR '+e.message}; }
 }
 async function fetchPool600(){
@@ -55,21 +71,29 @@ async function fetchPool600(){
 // --- 2 AI: Gemini + Groq ---
 async function askGemini(q){
   if(!process.env.GEMINI_API_KEY) return {ok:false, reason:'NO_KEY'};
-  try{
-    let r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key='+process.env.GEMINI_API_KEY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:'You are OddsGPT AI. Answer short, simple, with confidence level. Question: '+q}]}]})});
-    let j=await r.json().catch(()=>null); let txt=j?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if(txt) return {ok:true, answer:txt, model:'Gemini'};
-    return {ok:false, reason:'NO_ANSWER'};
-  }catch(e){ return {ok:false, reason:e.message}; }
+  let models=['gemini-1.5-flash','gemini-2.0-flash','gemini-pro','gemini-1.5-flash-8b'];
+  for(let m of models){
+    try{
+      let r=await fetch('https://generativelanguage.googleapis.com/v1beta/models/'+m+':generateContent?key='+process.env.GEMINI_API_KEY,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({contents:[{parts:[{text:'You are OddsGPT AI. Answer short, simple, with confidence level. Question: '+q}]}]})});
+      let j=await r.json().catch(()=>null); let txt=j?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if(txt) return {ok:true, answer:txt, model:'Gemini-'+m};
+      if(j?.error) continue; // try next model
+    }catch(e){ continue; }
+  }
+  return {ok:false, reason:'NO_ANSWER - Check GEMINI_API_KEY for Vercel, e fit expire or quota finish'};
 }
 async function askGroq(q){
   if(!process.env.GROQ_API_KEY) return {ok:false, reason:'NO_KEY'};
-  try{
-    let r=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Authorization':'Bearer '+process.env.GROQ_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({model:'llama-3.1-8b-instant',messages:[{role:'user',content:q}]})});
-    let j=await r.json().catch(()=>null); let txt=j?.choices?.[0]?.message?.content;
-    if(txt) return {ok:true, answer:txt, model:'Groq'};
-    return {ok:false, reason:'NO_ANSWER'};
-  }catch(e){ return {ok:false, reason:e.message}; }
+  let models=['llama-3.1-8b-instant','llama-3.3-70b-versatile','llama-3.1-70b-versatile'];
+  for(let m of models){
+    try{
+      let r=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{'Authorization':'Bearer '+process.env.GROQ_API_KEY,'Content-Type':'application/json'},body:JSON.stringify({model:m,messages:[{role:'user',content:q}]})});
+      let j=await r.json().catch(()=>null); let txt=j?.choices?.[0]?.message?.content;
+      if(txt) return {ok:true, answer:txt, model:'Groq-'+m};
+      if(j?.error) continue;
+    }catch(e){ continue; }
+  }
+  return {ok:false, reason:'NO_ANSWER - Check GROQ_API_KEY for Vercel, e fit expire'};
 }
 async function askAI(q){
   let g=await askGemini(q); if(g.ok) return g;
@@ -82,7 +106,7 @@ export default async function handler(req,res){
   if(req.method==='OPTIONS') return res.end('');
   let url=new URL(req.url,'http://localhost'); let endpoint=url.searchParams.get('endpoint')||'health';
   let body={}; try{ body=req.body&&typeof req.body==='object'?req.body:JSON.parse(req.body||'{}'); }catch(e){}
-  if(endpoint==='health') return json(res,200,{ok:true, service:'oddsgpt-backend', version:'V136'});
+  if(endpoint==='health') return json(res,200,{ok:true, service:'oddsgpt-backend', version:'V137'});
   if(endpoint==='config') return json(res,200,{paystackPublicKey:process.env.PAYSTACK_PUBLIC_KEY||''});
   // STATUS - Check 2 AI + 2 APIs + Pool 600 - frontend go show this
   if(endpoint==='status'){
