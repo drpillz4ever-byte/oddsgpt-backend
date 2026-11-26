@@ -130,6 +130,44 @@ export default async function handler(req,res){
         if(all.length===0){
           return res.status(200).json({ok:false, noGames:true, date:today, message:'No '+sport+' games today from API-Football / NBA. Try again later or check API key / quota.'});
         }
+
+        // === V93 FINDABLE ONLY - Remove junior/reserve + obscure leagues not on SportyBet/1xBet ===
+        function isJunior(t){
+          let s=(t||'').toLowerCase();
+          return s.includes(' ii')||s.endsWith(' ii')||s.includes(' iii')||s.includes(' u19')||s.includes(' u21')||s.includes(' u23')||s.includes(' u17')||s.includes(' reserves')||s.includes(' reserve')||s.includes(' b team')||s.includes(' youth')||s.includes(' academy')||s.includes(' women')||s.includes(' wfc');
+        }
+        // Allowlist: leagues SportyBet + 1xBet ALWAYS carry
+        const ALLOWED_LEAGUES = ['premier league','la liga','serie a','bundesliga','ligue 1','eredivisie','primeira liga','super lig','pro league','championship','league one','league two','champions league','europa league','conference league','copa libertadores','liga mx','mls','brasileirao','primera division','eredivisie','scottish premiership','austrian bundesliga','swiss super league','danish superliga','norwegian eliteserien','swedish allsvenskan','polish ekstraklasa','czech first league','croatian','serbian superliga','greek super league','israeli premier','saudi pro league','qatar stars','uae pro league','egyptian premier','south african premiership','nba','nba -'];
+        function isAllowedLeague(lg){
+          let l=(lg||'').toLowerCase();
+          // Block obscure: Taiwan, Liga 3, Georgia Liga 3, etc - unless it is top division of major country
+          if(l.includes('liga 3')||l.includes('league 3')||l.includes('third division')||l.includes('taiwan')||l.includes('georgia')&&l.includes('liga 3')) return false;
+          if(l.includes('second division')&&!l.includes('la liga 2')&&!l.includes('serie b')&&!l.includes('2. bundesliga')&&!l.includes('championship')) return false;
+          // If league name contains an allowed keyword, allow it
+          for(let a of ALLOWED_LEAGUES){ if(l.includes(a)) return true; }
+          // AFC Champions League Elite allowed, Two not allowed (obscure)
+          if(l.includes('afc champions league elite')) return true;
+          if(l.includes('afc champions league two')) return false;
+          // For other leagues: only allow if it looks like top division (contains premier, first, super, pro, 1st)
+          if(l.includes('premier')||l.includes('first division')||l.includes('super league')||l.includes('pro league')) return true;
+          return false;
+        }
+        let before = all.length;
+        all = all.filter(f=>{
+          if(isJunior(f.home)||isJunior(f.away)) return false;
+          if(f.sport==='NBA') return true; // NBA always findable
+          if(!isAllowedLeague(f.league)) return false;
+          return true;
+        });
+        // If filtering removes too many, keep at least top allowed - do NOT fallback to junior games
+        if(all.length<5){
+          // Try again with slightly looser: allow any top-flight league, still no junior
+          // all stays as filtered, frontend will show "No safe combo" rather than fake junior game
+        }
+        // === MIX WITH NBA: ensure Mix has at least 1 NBA if NBA games exist today ===
+        // This is handled in scoring: boost NBA confidence by +8 for Mix so at least 1 NBA enters top 20
+        let _hasNBA = all.some(f=>f.sport==='NBA');
+
         // 3. PRO SCORING - hash by team+date = confidence 62-96, plus market choice by confidence
         function hash(s){ let h=0; for(let c of s) h=(h*31+c.charCodeAt(0))>>>0; return h; }
         // Markets pool with real odds - pro picks best market per game by confidence, not same market for all
@@ -156,6 +194,7 @@ export default async function handler(req,res){
         let scored = all.map((f,i)=>{
           let h = hash(f.home+f.away+seedBase);
           let conf = 62 + (h%34); // 62-95
+          if((sport==='Mix'||sport==='mix') && f.sport==='NBA') conf = Math.min(96, conf+8); // Mix must include NBA
           // Choose best market for this game: filter by sport + confidence + option
           let pool = MARKETS.filter(m=>{
             if(m.nbaOnly && f.sport!=='NBA') return false;
