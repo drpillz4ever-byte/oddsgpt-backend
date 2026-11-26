@@ -1,4 +1,4 @@
-// OddsGPT Backend V114 - DAY CHOOSE FEATURE
+// OddsGPT Backend V116 - DAY CHOOSE FEATURE
 // Customer has right to choose day games: 30 odds today alone, 30 odds Tues to Fri, 5 odds for whichever day, default today
 export const PLANS={
  FREE:{price:0,maxOdds:2,maxSlipsPerDay:1,maxLegs:3,days:1,askAI:0,slipsTotal:1},
@@ -10,6 +10,7 @@ export const PLANS={
  BABA:{price:5000,maxOdds:1000,maxSlipsPerDay:10,maxLegs:20,days:30,askAI:999,slipsTotal:300},
 };
 export const POOL_SIZE=600;
+// ALL RULES STAY: FREE same for all, changes every 12 AM WAT via dateStr, pool 600, blocked leagues, findable games only, day choose logic, Ask AI from 300+
 export const BLOCKED=[" II"," III","U19","U21","U23","RESERVE","B TEAM","YOUTH","ACADEMY","WOMEN"];
 export function isBlocked(n){let s=" "+(n||"").toUpperCase()+" ";return BLOCKED.some(k=>s.includes(k))}
 export const FOOTBALL_OPTIONS=["1X2","1X2 - 1UP","1X2 - 2UP","1X2 - Never Down","Double Chance","Double Chance - 1UP","Draw No Bet","Over/Under 0.5","Over/Under 1.5","Over/Under 2.5","Over/Under 3.5","Over/Under 4.5","Over/Under 5.5","Asian Over/Under 1","Asian Over/Under 2","Asian Over/Under 3","Asian Over/Under 4","Asian Over/Under 5","Over/Under - Early Goals 1.5","Over/Under - Early Goals 2.5","Over/Under - Early Goals 3.5","1st Half Over/Under","2nd Half Over/Under","Both Halves Over 1.5","Both Halves Under 1.5","GG/NG","GG/NG 2+","BTTS","1X2 & GG/NG","1X2 & Over/Under 1.5","Correct Score","Correct Score [0:0]","Half Time / Full Time","Exact Goals","Multigoals","Multiscores","Goal Range","Winning Margin","Odd/Even","Home Team Over/Under 0.5","Home Team Over/Under 1.5","Home Team Over/Under 2.5","Away Team Over/Under 0.5","Away Team Over/Under 1.5","Clean Sheet Home","Clean Sheet Away","Win to Nil Home","Win to Nil Away","Win Both Halves","Win Either Half","Highest Scoring Half","Handicap 0:1","Handicap 0:2","Handicap 0:3","Handicap 1:0","Handicap 2:0","Asian Handicap -2.0","Asian Handicap -1.5","Asian Handicap -1.0","Asian Handicap -0.5","Asian Handicap 0","Asian Handicap +0.5","Asian Handicap +1.0","Asian Handicap +1.5","Asian Handicap +2.0","1st Goal (Home/None/Away)","Any Team to lead by 1 Goal","Any Team to lead by 2 Goals","Any Team to lead by 3 Goals","Any Team to Score 2+ in a Row","Any Team to Score 3+ in a Row","Offsides 1X2","Offsides Over/Under","Shots Over/Under","Shots on Target Over/Under","Posts and Crossbars Over/Under","Cards Over/Under","Exact Bookings","Most Player Goals","Most Shots","To Score or Assist"];
@@ -166,5 +167,5 @@ export default async function handler(req,res){
    return res.json({ok:true,...slip})
  }
  if(path.includes('ask-ai')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});return res.json({ok:true,answer:'AI: Based on your wish "'+(req.body?.wish||'')+'" and day '+((req.body?.wish||'')?'parsed as '+(parseDateRange(req.body.wish).label):'Today')+' , I recommend mix. Generate slip to get booking code.'})}
- return res.json({ok:true,version:'V114 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
+ return res.json({ok:true,version:'V116 DAY CHOOSE - CUSTOMER HAS RIGHT TO CHOOSE DAY',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
 }
