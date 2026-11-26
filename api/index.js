@@ -37,7 +37,6 @@ export function buildSlip({picks, targetOdds, plan, request, userId='', dateStr=
 }
 export function canAskAI(plan, used){ const r=PLANS[plan]||PLANS.FREE; if(r.askAI===0) return {allowed:false}; if(used>=r.askAI) return {allowed:false}; return {allowed:true, remaining:r.askAI-used}; }
 export function askAIAnalyze(match){ return { match: match.home+' vs '+match.away, deepScore: scoreDeep(match), safeOption:{label:'Over 1.5', confidence:82}, aiOption:{label:'Over 2.5 + GG', confidence:68}, note:'Pick the option you like.' }; }
-export default function handler(req,res){ if(req.url?.includes('/api/health')) return res.json({ok:true, version:'V86-LOCKED'}); return res.json({ok:true, plans:Object.keys(PLANS)}); }
 
 // ===== FULL LOCKED SPEC - ALL WE TALK ABOUT - V86 =====
 // PLANS: FREE 1.50-2 max 3, BANGER 100 mega 1 use 24h, QUICK 200 Safe 2-3 + BANGER, DAILY 300 Safe 2-3 + BANGER + custom 24h, TRY_AM 500 Safe 2-3 + BANGER + custom 3 days AskAI 2/day, SHARP 2000 Safe 2-3 + BANGER + custom 7 days AskAI 5/day, BABA 5000 Safe 2-3 + BANGER + custom 30 days AskAI unlimited. All paid up to 1000 odds, 20 legs.
