@@ -1,4 +1,4 @@
-// OddsGPT Backend V109 - SAME AS V107 BACKEND, INTERFACE NOT TOUCHED
+// OddsGPT Backend V110 - SAME AS V107 BACKEND, INTERFACE NOT TOUCHED
 // Only backend logic for options. Frontend interface stays as screenshot.
 // PLANS: FREE 0, BANGER 100, QUICK 200, DAILY 300, TRY_AM 500, SHARP 2000, BABA 5000 - DO NOT CHANGE PLANS IN FRONTEND
 export const PLANS={
@@ -35,5 +35,5 @@ export default async function handler(req,res){
  if(path.includes('paystack-verify')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first to pay'});return res.json({ok:true,paymentId:req.body?.paymentId||req.body?.reference,plan:req.body?.plan})}
  if(path.includes('generate-slip')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});let b=req.body||{};let parsed=parseRequest(b.wish||'');let picks=b.picks||[{home:'Arsenal',away:'Chelsea',league:'England Premier League',sport:'Football',market:'1X2',outcome:'HOME',odds:1.85},{home:'Real Madrid',away:'Barcelona',league:'Spain La Liga',sport:'Football',market:'OVER_2.5',outcome:'OVER',odds:1.75},{home:'New York Knicks',away:'Miami Heat',league:'NBA',sport:'Basketball',market:'BASKET_TOTAL',outcome:'OVER',odds:1.90}];let slip=buildSlip({picks,targetOdds:parsed.targetOdds,plan:b.plan||'FREE',request:parsed,userId:'u',dateStr:new Date().toISOString().slice(0,10)});return res.json({ok:true,...slip})}
  if(path.includes('ask-ai')){if(!needAuth())return res.status(401).json({ok:false,error:'Login first'});return res.json({ok:true,answer:'AI: Based on your options '+JSON.stringify((req.body||{}).options||[])+', I recommend mix. Generate slip to get booking code.'})}
- return res.json({ok:true,version:'V109 KEEP INTERFACE',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
+ return res.json({ok:true,version:'V110 KEEP INTERFACE',footballOptions:FOOTBALL_OPTIONS.length,basketballOptions:BASKETBALL_OPTIONS.length,pool:POOL_SIZE});
 }
