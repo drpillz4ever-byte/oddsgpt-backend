@@ -1,4 +1,4 @@
-// OddsGPT Backend V162 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
+// OddsGPT Backend V165 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
   FREE:{price:0,days:365,max:3,perDay:1},
@@ -13,7 +13,7 @@ function cors(res){res.setHeader('Access-Control-Allow-Origin','*');res.setHeade
 function watToday(){try{const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:'Africa/Lagos'}).formatToParts(new Date());return p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value+'-'+p.find(x=>x.type==='day').value;}catch(e){const n=new Date();return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}}
 async function getUser(req){const auth=req.headers.authorization||'';const token=auth.replace('Bearer ','');if(!token)return null;try{const r=await fetch(process.env.SUPABASE_URL+'/auth/v1/user',{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:'Bearer '+token}});if(!r.ok)return null;return await r.json();}catch(e){return null;}}
 // REAL fixtures from API-Football - NO fake games, NO invented stats
-// --- V162: DAILY CACHED FREE SLIP - same for everyone, changes only 12AM WAT ---
+// --- V165: DAILY CACHED FREE SLIP - same for everyone, changes only 12AM WAT ---
 async function supaGet(path){
   if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
   try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
@@ -63,7 +63,7 @@ async function fetchRealFreeGames(){
   for(const item of allFixtures){
     if(item.sport!=='Football') continue;
     try{
-      const oRes=await fetch('https://v3.football.api-sports.io/odds?fixture='+item.raw.fixture.id,{headers:{'x-apisports-key':key}});
+      const oCtrl=new AbortController();const oTimer=setTimeout(function(){oCtrl.abort();},4000);let oRes;try{oRes=await fetch('https://v3.football.api-sports.io/odds?fixture='+item.raw.fixture.id,{headers:{'x-apisports-key':key},signal:oCtrl.signal});}finally{clearTimeout(oTimer);}
       const oData=await oRes.json();
       const bms=oData.response?.[0]?.bookmakers||[]; if(!bms.length) continue;
       const bm=bms[0]; const bets=bm.bets||[];
@@ -151,6 +151,6 @@ module.exports = async (req,res)=>{
       const plan=(data.data.metadata?.plan||'').toUpperCase();const cfg=PLANS[plan]||{days:1};const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
       return res.json({ok:true,plan,expiresAt,amount:data.data.amount/100,reference:ref,paymentId:ref});
     }
-    return res.json({ok:true,message:'OddsGPT V162 backend running'});
+    return res.json({ok:true,message:'OddsGPT V165 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
