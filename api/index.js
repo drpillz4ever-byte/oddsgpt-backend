@@ -1,4 +1,4 @@
-// OddsGPT Backend V158 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
+// OddsGPT Backend V159 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
   FREE:{price:0,days:365,max:3,perDay:1},
@@ -15,56 +15,93 @@ async function getUser(req){const auth=req.headers.authorization||'';const token
 // REAL fixtures from API-Football - NO fake games, NO invented stats
 async function fetchRealFreeGames(){
   const key=process.env.API_FOOTBALL_KEY;
+  const bkey=process.env.API_BASKETBALL_KEY||key;
   if(!key) return {ok:false,error:'API_FOOTBALL_KEY not set in Vercel'};
   const today=watToday();
-  // Try today, then tomorrow if today has <3 usable fixtures
   const dates=[today];
   try{const d=new Date(today+'T12:00:00');d.setDate(d.getDate()+1);dates.push(d.toISOString().slice(0,10));}catch(e){}
-  let allFixtures=[];
-  let lastErr='';
+  const BLOCKED=[' II',' III','U19','U21','U23','RESERVE','YOUTH','WOMEN','ACADEMY','G LEAGUE'];
+  function blocked(name){const n=(' '+(name||'').toUpperCase());return BLOCKED.some(x=>n.includes(x));}
+  let candidates=[];
+  // 1) FOOTBALL - collect LOW-odd candidates (Double Chance, Over 0.5, Match Winner favourite <1.35)
   for(const date of dates){
-    try{
-      const fxRes=await fetch('https://v3.football.api-sports.io/fixtures?date='+date,{headers:{'x-apisports-key':key}});
-      const fx=await fxRes.json();
-      if(fx.errors && Object.keys(fx.errors).length) lastErr=JSON.stringify(fx.errors);
-      if(fx.response && fx.response.length) allFixtures.push(...fx.response.map(f=>({...f,_date:date})));
-      if(allFixtures.length>=10) break;
-    }catch(e){ lastErr=e.message; }
-  }
-  if(!allFixtures.length) return {ok:true,date:today,games:[],combined:'-',message:'API-Football returned 0 fixtures for today/tomorrow. '+(lastErr?('API says: '+lastErr):'Check key/quota in Vercel. No fake games shown.')};
-  const games=[];
-  for(const f of allFixtures){
-    if(games.length>=3) break;
-    // Skip if no teams
-    if(!f.teams || !f.teams.home || !f.teams.away) continue;
-    let pick='Match Winner', odd=null, reason='';
-    try{
-      // No bookmaker filter - use ANY bookmaker that has Match Winner, not only Bookmaker 8
-      const oRes=await fetch('https://v3.football.api-sports.io/odds?fixture='+f.fixture.id,{headers:{'x-apisports-key':key}});
-      const oData=await oRes.json();
-      const bookmakers=oData.response?.[0]?.bookmakers||[];
-      outer: for(const bm of bookmakers){
+    if(candidates.length>=40) break;
+    let fx={response:[]};
+    try{const r=await fetch('https://v3.football.api-sports.io/fixtures?date='+date,{headers:{'x-apisports-key':key}});fx=await r.json();}catch(e){continue;}
+    for(const f of (fx.response||[])){
+      if(candidates.length>=40) break;
+      if(!f.teams||!f.teams.home) continue;
+      if(blocked(f.league?.name)) continue;
+      try{
+        const oRes=await fetch('https://v3.football.api-sports.io/odds?fixture='+f.fixture.id,{headers:{'x-apisports-key':key}});
+        const oData=await oRes.json();
+        const bms=oData.response?.[0]?.bookmakers||[];
+        if(!bms.length) continue;
+        const bm=bms[0];
         const bets=bm.bets||[];
-        const mw=bets.find(b=>b.name==='Match Winner');
-        if(mw && mw.values && mw.values.length){
-          const sorted=[...mw.values].sort((a,b)=>parseFloat(a.odd)-parseFloat(b.odd));
-          const fav=sorted[0];
-          // Loose range: accept 1.05-2.50, not only 1.10-1.60
-          const o=parseFloat(fav.odd);
-          if(o>=1.05 && o<=2.50){ pick=fav.value; odd=o; reason='Real fixture + real bookmaker odd ('+bm.name+'). Favourite from live odds.'; break outer; }
-        }
-      }
-    }catch(e){}
-    const kickoff=new Date(f.fixture.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
-    if(odd===null){
-      // FALLBACK: still show REAL game, no invented odd - user sees real game
-      games.push({home:f.teams.home.name, away:f.teams.away.name, league:(f.league?f.league.name+' • '+f.league.country:'Football'), kickoff, market:'1X2', pick:'Research - check live odds', odd:'—', reason:'Real fixture from API-Football. Bookmaker odd not available for this fixture - check live odds before staking. No invented odd.'});
-    } else {
-      games.push({home:f.teams.home.name, away:f.teams.away.name, league:(f.league?f.league.name+' • '+f.league.country:'Football'), kickoff, market:'1X2', pick, odd:odd.toFixed(2), reason});
+        const kickoff=new Date(f.fixture.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
+        const base={sport:'Football',home:f.teams.home.name,away:f.teams.away.name,league:(f.league?f.league.name+' • '+f.league.country:'Football'),kickoff,fixtureId:'F'+f.fixture.id};
+        // Double Chance - best for low combined
+        const dc=bets.find(x=>x.name==='Double Chance');
+        if(dc) for(const v of dc.values){const o=parseFloat(v.odd); if(o>=1.10&&o<=1.40) candidates.push({...base,market:'Double Chance',pick:v.value,odd:o,reason:'Real fixture + real bookmaker odd ('+bm.name+'). Double Chance.'});}
+        // Over 0.5 goals
+        const ou=bets.find(x=>x.name==='Goals Over/Under');
+        if(ou){const ov=ou.values.find(v=>v.value==='Over 0.5'); if(ov){const o=parseFloat(ov.odd); if(o>=1.05&&o<=1.35) candidates.push({...base,market:'Over 0.5 Goals',pick:'Over 0.5',odd:o,reason:'Real fixture + real bookmaker odd ('+bm.name+'). Over 0.5 Goals.'});}}
+        // Match Winner favourite only if low
+        const mw=bets.find(x=>x.name==='Match Winner');
+        if(mw){const s=[...mw.values].sort((a,b)=>parseFloat(a.odd)-parseFloat(b.odd)); const fav=s[0]; const o=parseFloat(fav.odd); if(o>=1.10&&o<=1.35) candidates.push({...base,market:'1X2',pick:fav.value,odd:o,reason:'Real fixture + real bookmaker odd ('+bm.name+'). Favourite.'});}
+      }catch(e){continue;}
     }
   }
-  let combined='-'; const nums=games.map(g=>parseFloat(g.odd)).filter(n=>!isNaN(n));
-  if(nums.length===games.length && nums.length) { let c=1; nums.forEach(n=>c*=n); combined=c.toFixed(2); }
+  // 2) BASKETBALL - Moneyline / Total Over low odds, to allow mix
+  if(bkey){
+    for(const date of dates){
+      if(candidates.length>=50) break;
+      try{
+        const r=await fetch('https://v1.basketball.api-sports.io/games?date='+date,{headers:{'x-apisports-key':bkey}});
+        const g=await r.json();
+        for(const gm of (g.response||[]).slice(0,10)){
+          if(candidates.length>=50) break;
+          if(!gm.teams||!gm.teams.home) continue;
+          if(blocked(gm.league?.name)) continue;
+          try{
+            const oRes=await fetch('https://v1.basketball.api-sports.io/odds?game='+gm.id,{headers:{'x-apisports-key':bkey}});
+            const oData=await oRes.json();
+            const bms=oData.response?.[0]?.bookmakers||[];
+            if(!bms.length) continue;
+            const bm=bms[0]; const bets=bm.bets||[];
+            const kickoff=new Date(gm.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'});
+            const base={sport:'Basketball',home:gm.teams.home.name,away:gm.teams.away.name,league:(gm.league?gm.league.name+' • '+gm.league.country:'Basketball'),kickoff,fixtureId:'B'+gm.id};
+            const ml=bets.find(x=>/Moneyline|Match Winner|Winner/i.test(x.name));
+            if(ml){const s=[...ml.values].sort((a,b)=>parseFloat(a.odd)-parseFloat(b.odd)); const fav=s[0]; const o=parseFloat(fav.odd); if(o>=1.10&&o<=1.40) candidates.push({...base,market:'Moneyline',pick:fav.value,odd:o,reason:'Real fixture + real bookmaker odd ('+bm.name+'). Basketball favourite.'});}
+          }catch(e){continue;}
+        }
+      }catch(e){continue;}
+    }
+  }
+  if(!candidates.length) return {ok:true,date:today,games:[],combined:'-',message:'Real fixtures exist but no low-odd (1.10-1.40) candidates found for 1.50-2.00 combo today. No fake games shown.'};
+  // 3) SEARCH for combo of 2 or 3 DIFFERENT fixtures whose product is 1.50-2.00, closest to 1.75
+  // Deduplicate by fixtureId+market+pick, keep lowest odd per fixture for diversity
+  const byFix={}; for(const c of candidates){if(!byFix[c.fixtureId]||c.odd<byFix[c.fixtureId].odd) byFix[c.fixtureId]=c;}
+  const pool=Object.values(byFix);
+  let best=null, bestScore=999;
+  function tryCombo(arr){
+    if(arr.length<2) return;
+    const prod=arr.reduce((a,c)=>a*c.odd,1);
+    if(prod<1.50||prod>2.00) return;
+    const score=Math.abs(prod-1.75);
+    // Prefer mix (football+basketball) and 3 games
+    const hasMix=new Set(arr.map(a=>a.sport)).size>1;
+    const adj=score - (hasMix?0.05:0) - (arr.length===3?0.03:0);
+    if(adj<bestScore){bestScore=adj; best=arr;}
+  }
+  // Try 3-game combos
+  for(let i=0;i<pool.length;i++) for(let j=i+1;j<pool.length;j++) for(let k=j+1;k<pool.length;k++) tryCombo([pool[i],pool[j],pool[k]]);
+  // Try 2-game combos if no 3-game found
+  if(!best) for(let i=0;i<pool.length;i++) for(let j=i+1;j<pool.length;j++) tryCombo([pool[i],pool[j]]);
+  if(!best) return {ok:true,date:today,games:[],combined:'-',message:'Could not build 1.50-2.00 combo from real low odds today (all combos above 2.00 or below 1.50). No fake games shown - try again after odds update.'};
+  const games=best.map(g=>({home:g.home,away:g.away,league:g.league,kickoff:g.kickoff,market:g.market,pick:g.pick,odd:g.odd.toFixed(2),reason:g.reason,sport:g.sport}));
+  const combined=best.reduce((a,c)=>a*c.odd,1).toFixed(2);
   return {ok:true,date:today,games,combined,plan:'FREE'};
 }
 module.exports = async (req,res)=>{
@@ -93,6 +130,6 @@ module.exports = async (req,res)=>{
       const plan=(data.data.metadata?.plan||'').toUpperCase();const cfg=PLANS[plan]||{days:1};const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
       return res.json({ok:true,plan,expiresAt,amount:data.data.amount/100,reference:ref,paymentId:ref});
     }
-    return res.json({ok:true,message:'OddsGPT V158 backend running'});
+    return res.json({ok:true,message:'OddsGPT V159 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
