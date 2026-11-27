@@ -1,3 +1,12 @@
 {
-  "version": 2
+  "crons": [
+    {
+      "path": "/api/index?endpoint=warmup",
+      "schedule": "0 23 * * *"
+    },
+    {
+      "path": "/api/index?endpoint=warmup",
+      "schedule": "5 23 * * *"
+    }
+  ]
 }
