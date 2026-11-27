@@ -1,5 +1,4 @@
-
-// OddsGPT Backend V168 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
+// OddsGPT Backend V169 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
   FREE:{price:0,days:365,max:3,perDay:1},
@@ -14,7 +13,7 @@ function cors(res){res.setHeader('Access-Control-Allow-Origin','*');res.setHeade
 function watToday(){try{const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:'Africa/Lagos'}).formatToParts(new Date());return p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value+'-'+p.find(x=>x.type==='day').value;}catch(e){const n=new Date();return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}}
 async function getUser(req){const auth=req.headers.authorization||'';const token=auth.replace('Bearer ','');if(!token)return null;try{const r=await fetch(process.env.SUPABASE_URL+'/auth/v1/user',{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:'Bearer '+token}});if(!r.ok)return null;return await r.json();}catch(e){return null;}}
 // REAL fixtures from API-Football - NO fake games, NO invented stats
-// --- V168: DAILY CACHED FREE SLIP - same for everyone, changes only 12AM WAT ---
+// --- V169: DAILY CACHED FREE SLIP - same for everyone, changes only 12AM WAT ---
 async function supaGet(path){
   if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
   try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
@@ -24,7 +23,7 @@ async function supaPost(path, body){
   try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{method:'POST',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(body)}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
 }
 function hashStr(s){let h=0; for(let i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i); h|=0;} return Math.abs(h);}
-// V168: NEVER-EMPTY. Bulk odds (1 call) + generation lock + real AI cross-check + last-slip fallback
+// V169: NEVER-EMPTY. Bulk odds (1 call) + generation lock + real AI cross-check + last-slip fallback
 let __genLock = null;
 let __memCache = {date:'', games:null, combined:'-', at:0};
 async function aiCrossCheck(cands, today){
@@ -51,14 +50,14 @@ async function aiCrossCheck(cands, today){
   }catch(e){}
   return null;
 }
-async function fetchRealFreeGames(){
+async function fetchRealFreeGames(force){
   const key=process.env.API_FOOTBALL_KEY;
   const bkey=process.env.API_BASKETBALL_KEY||key;
   const today=watToday();
-  // 0) MEMORY cache: instant, no API call
-  if(__memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
-  // 1) SUPABASE cache: same slip for everyone
-  const cached=await supaGet('daily_slips?date=eq.'+today+'&select=*&limit=1');
+  // 0) MEMORY cache: instant, no API call (skip if force = generate-now)
+  if(!force && __memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
+  // 1) SUPABASE cache: same slip for everyone (skip if force)
+  const cached=!force ? await supaGet('daily_slips?date=eq.'+today+'&select=*&limit=1') : null;
   if(cached && cached.length && cached[0].games){
     try{const g=typeof cached[0].games==='string'?JSON.parse(cached[0].games):cached[0].games; if(g && g.length){ __memCache={date:today,games:g,combined:cached[0].combined||'-',at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:g,combined:cached[0].combined||'-',plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
   }
@@ -132,6 +131,8 @@ module.exports = async (req,res)=>{
   const endpoint=(req.query.endpoint||req.body?.endpoint||'').toString();
   try{
     if(endpoint==='status'){return res.json({ok:true,footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,aiKey:!!(process.env.GEMINI_API_KEY||process.env.GROQ_API_KEY),paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
+    if(endpoint==='pool-status'){const t2=watToday();const c=await supaGet('daily_slips?date=eq.'+t2+'&select=*&limit=1');return res.json({ok:true,date:t2,hasSlip:!!(c&&c.length&&c[0].games),games:(c&&c[0].games)?(typeof c[0].games==='string'?JSON.parse(c[0].games).length:c[0].games.length):0,combined:c&&c[0].combined});}
+    if(endpoint==='generate-now'){res.setHeader('Cache-Control','no-store');__memCache={date:'',games:null,combined:'-',at:0};const r=await fetchRealFreeGames(true);return res.json({ok:true,generated:true,date:r.date,games:r.games||[],combined:r.combined,debug:r.debug});}
     if(endpoint==='warmup'||endpoint==='cron-daily'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json({ok:true,warmup:true,date:r.date,games:(r.games||[]).length,combined:r.combined});}
     if(endpoint==='diag'){return res.json({ok:true,serverDate:watToday(),footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,geminiKey:!!process.env.GEMINI_API_KEY,groqKey:!!process.env.GROQ_API_KEY,openaiKey:!!process.env.OPENAI_API_KEY,supabaseUrl:!!process.env.SUPABASE_URL,serviceRole:!!process.env.SUPABASE_SERVICE_ROLE_KEY,paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
     if(endpoint==='free-slip'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json(r);}
@@ -154,7 +155,6 @@ module.exports = async (req,res)=>{
       const plan=(data.data.metadata?.plan||'').toUpperCase();const cfg=PLANS[plan]||{days:1};const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
       return res.json({ok:true,plan,expiresAt,amount:data.data.amount/100,reference:ref,paymentId:ref});
     }
-    return res.json({ok:true,message:'OddsGPT V168 backend running'});
+    return res.json({ok:true,message:'OddsGPT V169 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
-
