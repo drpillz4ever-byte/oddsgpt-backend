@@ -2,11 +2,11 @@
   "crons": [
     {
       "path": "/api/index?endpoint=warmup",
-      "schedule": "0 23 * * *"
+      "schedule": "0 9 * * *"
     },
     {
       "path": "/api/index?endpoint=warmup",
-      "schedule": "5 23 * * *"
+      "schedule": "5 9 * * *"
     }
   ]
 }
