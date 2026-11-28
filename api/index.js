@@ -17,6 +17,7 @@ async function supaPost(path, body){
   if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
   try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{method:'POST',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(body)}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
 }
+async function supaPatch(path, body){ if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null; try{ const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{method:'PATCH',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(body)}); if(!r.ok) return null; return await r.json(); }catch(e){ return null; } }
 function hashStr(s){let h=0; for(let i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i); h|=0;} return Math.abs(h);}
 // V171: NEVER-EMPTY. Bulk odds (1 call) + generation lock + real AI cross-check + last-slip fallback
 let __genLock = null;
@@ -46,6 +47,131 @@ async function aiCrossCheck(cands, today){
   }catch(e){}
   return null;
 }
+
+// ---- V178-AUTOMATIC POOL-ONCE + ASK AI ----
+// Pool = fixtures+odds for one date, fetched once, cached in memory + Supabase daily_slips pool row.
+// getPoolForDates(dates[]) returns combined candidates for those dates, all future kickoff, distinct fixtures enforced at pick time.
+// Max 7 days: dates must be within today..today+7, else rejected.
+let __poolCache = {}; // {date: {at, candidates, fixtures}}
+async function fetchPoolForDate(date){
+  if(__poolCache[date] && Date.now()-__poolCache[date].at < 6*3600*1000) return __poolCache[date];
+  // Try Supabase pool row first: pools table may not exist yet -> fallback to API, never crash
+  try{ const rows = await supaGet('pools?date=eq.'+date+'&select=*&limit=1'); if(rows && rows.length && rows[0].candidates){ try{ const c=typeof rows[0].candidates==='string'?JSON.parse(rows[0].candidates):rows[0].candidates; if(c && c.length){ __poolCache[date]={at:Date.now(),candidates:c,fixtures:[]}; return __poolCache[date]; } }catch(e){} } }catch(e){}
+  const key=process.env.API_FOOTBALL_KEY; const bkey=process.env.API_BASKETBALL_KEY||key;
+  let candidates=[]; let allFixtures=[];
+  const BLOCKED=[' II',' III','U19','U21','U23','RESERVE','YOUTH','WOMEN','ACADEMY','G LEAGUE'];
+  function blocked(n){const s=(' '+(n||'').toUpperCase()); return BLOCKED.some(x=>s.includes(x));}
+  function cleanLeague(l,fb){ if(!l) return fb; const nm=l.name||''; const co=l.country||''; if(!nm) return fb; if(!co||co==='undefined') return nm; return nm+' • '+co; }
+  function cleanM(m,p){ if(m==='Over/Under'||/Over\/Under/i.test(m)) return p; let mm=(m||'').replace(/Goals/g,'Points'); return mm; }
+  const _now=Date.now();
+  try{
+    const r=await fetch('https://v3.football.api-sports.io/fixtures?date='+date+'&timezone=Africa%2FLagos',{headers:{'x-apisports-key':key}});
+    const fx=await r.json(); const flist=(fx.response||[]).filter(f=>f.teams&&f.teams.home&&!blocked(f.league?.name)&&new Date(f.fixture.date).getTime()>_now-30*60000).slice(0,60);
+    for(const f of flist) allFixtures.push({sport:'Football',home:f.teams.home.name,away:f.teams.away.name,league:cleanLeague(f.league,'Football'),kickoff:new Date(f.fixture.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'}),fixtureId:'F'+f.fixture.id,rawDate:f.fixture.date,raw:f});
+  }catch(e){}
+  try{
+    const r=await fetch('https://v3.football.api-sports.io/odds?date='+date+'&timezone=Africa%2FLagos',{headers:{'x-apisports-key':key}});
+    const oData=await r.json(); const byF={}; for(const o of (oData.response||[])) byF[o.fixture?.id]=o;
+    for(const item of allFixtures.slice(0,40)){ const o=byF[item.raw.fixture.id]; if(!o) continue; const bms=o.bookmakers||[]; if(!bms.length) continue; const bm=bms[0]; const bets=bm.bets||[]; const base={sport:'Football',home:item.home,away:item.away,league:item.league,kickoff:item.kickoff,fixtureId:item.fixtureId,date:date,rawDate:item.rawDate};
+      const add=(pick,odd,market,reason)=>{ const oo=parseFloat(odd); if(isNaN(oo)||oo<1.05||oo>3.00) return; candidates.push({...base,market:cleanM(market,pick),pick,odd:oo,reason:reason+' ('+bm.name+').'}); };
+      const dc=bets.find(x=>x.name==='Double Chance'); if(dc) for(const v of dc.values) add(v.value,v.odd,'Double Chance','Real fixture + real odd. Double Chance');
+      const ou=bets.find(x=>x.name==='Goals Over/Under'); if(ou) for(const v of ou.values){ if(['Over 0.5','Over 1.5','Over 2.5','Under 2.5','Under 3.5'].includes(v.value)) add(v.value,v.odd,'Goals Over/Under','Real fixture + real odd.'); }
+      const mw=bets.find(x=>x.name==='Match Winner'); if(mw) for(const v of mw.values) add(v.value,v.odd,'1X2','Real fixture + real odd. 1X2');
+    }
+  }catch(e){}
+  // Basketball only if football short - max 4 games, future only
+  if(candidates.length<30 && bkey){
+    try{
+      const r=await fetch('https://v1.basketball.api-sports.io/games?date='+date+'&timezone=Africa%2FLagos',{headers:{'x-apisports-key':bkey}});
+      const g=await r.json(); const list=(g.response||[]).filter(gm=>gm.teams&&gm.teams.home&&!blocked(gm.league?.name)&&new Date(gm.date).getTime()>_now-30*60000).slice(0,4);
+      for(const gm of list){ try{ const oRes=await fetch('https://v1.basketball.api-sports.io/odds?game='+gm.id,{headers:{'x-apisports-key':bkey}}); const oData=await oRes.json(); const bms=oData.response?.[0]?.bookmakers||[]; if(!bms.length) continue; const bm=bms[0]; const kickoff=new Date(gm.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'}); const base={sport:'Basketball',home:gm.teams.home.name,away:gm.teams.away.name,league:cleanLeague(gm.league,'Basketball'),kickoff,fixtureId:'B'+gm.id,date:date,rawDate:gm.date}; for(const bet of (bm.bets||[])){ for(const v of (bet.values||[])){ const oo=parseFloat(v.odd); if(!isNaN(oo)&&oo>=1.05&&oo<=3.00) candidates.push({...base,market:cleanM(bet.name,v.value),pick:v.value,odd:oo,reason:'Real fixture + real odd ('+bm.name+'). Basketball.'}); } } }catch(e){ continue; } }
+    }catch(e){}
+  }
+  const out={at:Date.now(),candidates,fixtures:allFixtures};
+  __poolCache[date]=out;
+  try{ await supaPost('pools',{date:date,candidates:JSON.stringify(candidates)}); }catch(e){ /* pools table may not exist yet - memory cache still works */ }
+  return out;
+}
+function parseAskAI(text){
+  const t=(text||'').toLowerCase();
+  let targetOdds=5; const m=t.match(/(\d+(\.\d+)?)\s*(odds|odd)/); if(m) targetOdds=parseFloat(m[1]);
+  if(targetOdds>1000) targetOdds=1000; if(targetOdds<1.2) targetOdds=1.2;
+  let days=['today']; if(/next\s*5\s*days|5\s*days/.test(t)) days=['today','tomorrow','+2','+3','+4'];
+  else if(/next\s*7|7\s*days|week/.test(t)) days=['today','tomorrow','+2','+3','+4','+5','+6'];
+  else if(/today\s*\+\s*tomorrow|today and tomorrow|today \+ tomorrow/.test(t)) days=['today','tomorrow'];
+  else if(/tomorrow/.test(t) && !/today/.test(t)) days=['tomorrow'];
+  else if(/weekend/.test(t)) days=['today','tomorrow','+2'];
+  let market=null; if(/over 1\.5/.test(t)) market='Over 1.5'; else if(/over 0\.5/.test(t)) market='Over 0.5'; else if(/double chance/.test(t)) market='Double Chance';
+  let excludeGerman=/no german|without german|no germany/.test(t);
+  return {targetOdds,days,market,excludeGerman};
+}
+function watDatePlus(offset){ const d=new Date(); try{ const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:'Africa/Lagos'}).formatToParts(d); let dt=new Date(p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value+'-'+p.find(x=>x.type==='day').value+'T12:00:00'); dt.setDate(dt.getDate()+offset); return dt.getFullYear()+'-'+String(dt.getMonth()+1).padStart(2,'0')+'-'+String(dt.getDate()).padStart(2,'0'); }catch(e){ const n=new Date(); n.setDate(n.getDate()+offset); return n.toISOString().slice(0,10); } }
+async function handleAskAI(body){
+  const text=(body?.text||body?.prompt||'').toString().slice(0,500);
+  if(!text) return {ok:false,message:'Type wetin you want. Example: Book me 10 odds from today and tomorrow games.'};
+  const parsed=parseAskAI(text);
+  // 7-day guard: if user asks beyond 7 days
+  if(/3\s*weeks|2\s*weeks|month|next month/.test(text.toLowerCase())) return {ok:false,message:'We fit book from today to the next 7 days only. Odds for games after 7 days never come out yet. Try 7 days max, you go get correct odds.',code:'OUT_OF_RANGE'};
+  const dates = parsed.days.map(d=> d==='today'?watDatePlus(0): d==='tomorrow'?watDatePlus(1): watDatePlus(parseInt(d.replace('+',''),10)));
+  let pool=[];
+  for(const dt of dates){ const p=await fetchPoolForDate(dt); pool=pool.concat(p.candidates||[]); }
+  if(parsed.excludeGerman) pool=pool.filter(c=>!/germany|bundesliga|german/i.test(c.league||''));
+  if(parsed.market) { const f=pool.filter(c=>c.pick===parsed.market||c.market.includes(parsed.market)); if(f.length>=3) pool=f; }
+  if(!pool.length) return {ok:false,message:'No games with odds for those days yet. Try today or tomorrow.'};
+  // Dedupe by fixture+market+pick, keep cheapest, shuffle deterministically by date
+  const byKey={}; for(const c of pool){ const k=c.fixtureId+'|'+c.market+'|'+c.pick; if(!byKey[k]||c.odd<byKey[k].odd) byKey[k]=c; }
+  let cands=Object.values(byKey);
+  // Distinct fixture search: try to hit target within 5% tolerance, prefer fewer games for low odds, more for high odds
+  const target=parsed.targetOdds;
+  // Greedy + backtrack: sort by odd descending for high targets, ascending for low
+  cands.sort((a,b)=> Math.abs(Math.log(a.odd)-Math.log(1.35)) - Math.abs(Math.log(b.odd)-Math.log(1.35)));
+  function findCombo(n, tolerance){
+    const idx=[]; const used=new Set();
+    function rec(start,depth){
+      if(depth===n){ const prod=idx.reduce((a,c)=>a*c.odd,1); if(prod>=target*(1-tolerance)&&prod<=target*(1+tolerance)) return [...idx]; return null; }
+      for(let i=start;i<cands.length;i++){ if(used.has(cands[i].fixtureId)) continue; used.add(cands[i].fixtureId); idx.push(cands[i]); const r=rec(i+1,depth+1); if(r) return r; idx.pop(); used.delete(cands[i].fixtureId); if(idx.length===0 && i>80) break; }
+      return null;
+    }
+    return rec(0,0);
+  }
+  let best=null; let nTry = target<=2 ? 3 : target<=10 ? 6 : target<=100 ? 12 : 22;
+  for(const tol of [0.02,0.05,0.10,0.20]){ for(let n=Math.max(2,nTry-4); n<=Math.min(30,nTry+4); n++){ best=findCombo(n,tol); if(best) break; } if(best) break; }
+  if(!best){
+    // Fallback: greedy distinct fixtures until we overshoot, then trim
+    const seen=new Set(); const picked=[]; let prod=1;
+    for(const c of cands){ if(seen.has(c.fixtureId)) continue; if(prod>=target) break; seen.add(c.fixtureId); picked.push(c); prod*=c.odd; if(picked.length>=30) break; }
+    best=picked;
+  }
+  const games=best.map(g=>({home:g.home,away:g.away,league:g.league,kickoff:g.kickoff,date:g.date,market:g.market,pick:g.pick,odd:typeof g.odd==='number'?g.odd.toFixed(2):g.odd,reason:g.reason,sport:g.sport}));
+  const combined=best.reduce((a,c)=>a*c.odd,1);
+  const isLottery = target>=100;
+  return {ok:true,parsed, games, combined:combined.toFixed(2), target:target, isLottery, label: isLottery?'BANGER / LOTTERY TICKET — High Risk. This na lottery, no be sure win. Play with money wey you fit lose.':'Smart Analysis — Picked from stored pool, no new API call.', note: isLottery?'You need '+games.length+' games to reach '+target+' odds. 1 cut = all cut.':''};
+}
+
+
+function isAdminUser(user){ if(!user||!user.email) return false; const list=(process.env.ADMIN_EMAILS||'drpillz4ever@gmail.com').split(',').map(s=>s.trim().toLowerCase()); return list.includes(user.email.toLowerCase()); }
+function genPayId(){ const d=new Date(); const ymd=d.getFullYear()+String(d.getMonth()+1).padStart(2,'0')+String(d.getDate()).padStart(2,'0'); return 'PAY-'+ymd+'-'+Math.random().toString(36).slice(2,8).toUpperCase(); }
+async function grantSubscription(email, userId, plan, reference, payId, amount){
+  const cfg=PLANS[plan]||{days:1,total:1,perDay:1};
+  const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
+  const now=new Date().toISOString();
+  // Save payment with own PAY- ID for support/refunds
+  try{ await supaPost('payments',{payment_id:payId||genPayId(),reference:reference||'',email:email,plan:plan,amount:amount||cfg.price,status:'success',created_at:now}); }catch(e){}
+  // Upsert subscription: one active per email+plan
+  try{
+    const existing = await supaGet('subscriptions?email=eq.'+encodeURIComponent(email)+'&plan=eq.'+plan+'&select=*&limit=1');
+    if(existing && existing.length){
+      await supaPatch('subscriptions?id=eq.'+existing[0].id,{expires_at:expiresAt,slips_left:cfg.total||1,slips_total:cfg.total||1,status:'active',updated_at:now,payment_id:payId||''});
+    } else {
+      await supaPost('subscriptions',{email:email,user_id:userId||'',plan:plan,expires_at:expiresAt,slips_left:cfg.total||1,slips_total:cfg.total||1,status:'active',payment_id:payId||'',created_at:now});
+    }
+  }catch(e){}
+  return {plan,expiresAt,slips_left:cfg.total||1};
+}
+async function getActiveSubscription(email){
+  try{ const rows=await supaGet('subscriptions?email=eq.'+encodeURIComponent(email)+'&status=eq.active&select=*&order=created_at.desc&limit=5'); if(!rows||!rows.length) return null; const now=Date.now(); for(const r of rows){ if(new Date(r.expires_at).getTime()>now && (r.slips_left==null||r.slips_left>0)) return r; } return null; }catch(e){ return null; }
+}
+
 async function fetchRealFreeGames(force){
   const key=process.env.API_FOOTBALL_KEY;
   const bkey=process.env.API_BASKETBALL_KEY||key;
@@ -65,12 +191,12 @@ async function fetchRealFreeGames(force){
   const BLOCKED=[' II',' III','U19','U21','U23','RESERVE','YOUTH','WOMEN','ACADEMY','G LEAGUE'];
   function blocked(name){const n=(' '+(name||'').toUpperCase());return BLOCKED.some(x=>n.includes(x));}
   function cleanLeague(league, fallback){ if(!league) return fallback; const name=league.name||''; const country=league.country||''; if(!name) return fallback; if(!country||country==='undefined'||country==='null') return name; return name+' • '+country; }
-  function cleanMarket(market, pick){ if(market==='Over/Under'||/Over\/Under/i.test(market)) return pick; if(market==='Goals Over/Under') return pick+' Goals'; return market; }
+  function cleanMarket(market, pick){ if(market==='Over/Under'||/Over\/Under/i.test(market)) return pick; if(market==='Goals Over/Under') return pick+' Goals'; let m=(market||'').replace(/Goals/g,'Points').replace(/Goal/g,'Point'); let p=(pick||'').replace(/Goals/g,'Points'); if(/Total Points/i.test(m)||/Total Goals/i.test(market)) return m+' — '+p; return m; }
   let candidates=[]; let allFixtures=[]; let apiErrors=[];
   // FOOTBALL fixtures - timezone Africa/Lagos so WAT day matches site day
   let fxList=[];
   for(const date of [today]){ try{ const r=await fetch('https://v3.football.api-sports.io/fixtures?date='+date+'&timezone=Africa%2FLagos',{headers:{'x-apisports-key':key}}); const fx=await r.json(); if(fx.errors && Object.keys(fx.errors).length) apiErrors.push('football-fixtures:'+JSON.stringify(fx.errors)); fxList = fx.response||[]; }catch(e){ apiErrors.push('football-fixtures:'+e.message); } }
-  const flist = fxList.filter(f=>f.teams&&f.teams.home&&!blocked(f.league?.name)).slice(0,40);
+  const _now=Date.now(); const flist = fxList.filter(f=>f.teams&&f.teams.home&&!blocked(f.league?.name)&&new Date(f.fixture.date).getTime()>_now-30*60000).slice(0,40);
   for(const f of flist){ allFixtures.push({sport:'Football',home:f.teams.home.name,away:f.teams.away.name,league:cleanLeague(f.league,'Football'),kickoff:new Date(f.fixture.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'}),fixtureId:'F'+f.fixture.id,raw:f}); }
   // BULK ODDS: 1 call for the whole day, not 8 calls (old code burned 100/day quota by 10am)
   try{
@@ -92,17 +218,17 @@ async function fetchRealFreeGames(force){
     try{
       const r=await fetch('https://v1.basketball.api-sports.io/games?date='+today+'&timezone=Africa%2FLagos',{headers:{'x-apisports-key':bkey}});
       const g=await r.json(); if(g.errors && Object.keys(g.errors).length) apiErrors.push('basketball-games:'+JSON.stringify(g.errors));
-      const list=(g.response||[]).filter(gm=>gm.teams&&gm.teams.home&&!blocked(gm.league?.name)).slice(0,4);
+      const list=(g.response||[]).filter(gm=>gm.teams&&gm.teams.home&&!blocked(gm.league?.name)&&new Date(gm.date).getTime()>Date.now()-30*60000).slice(0,4);
       for(const gm of list){ try{ const oRes=await fetch('https://v1.basketball.api-sports.io/odds?game='+gm.id,{headers:{'x-apisports-key':bkey}}); const oData=await oRes.json(); const bms=oData.response?.[0]?.bookmakers||[]; if(!bms.length) continue; const bm=bms[0]; const kickoff=new Date(gm.date).toLocaleString('en-NG',{timeZone:'Africa/Lagos',hour:'2-digit',minute:'2-digit',day:'numeric',month:'short'}); const base={sport:'Basketball',home:gm.teams.home.name,away:gm.teams.away.name,league:cleanLeague(gm.league,'Basketball'),kickoff,fixtureId:'B'+gm.id}; for(const bet of (bm.bets||[])){ for(const v of (bet.values||[])){ const oo=parseFloat(v.odd); if(!isNaN(oo)&&oo>=1.05&&oo<=2.50) candidates.push({...base,market:cleanMarket(bet.name,v.value),pick:v.value,odd:oo,reason:'Real fixture + real bookmaker odd ('+bm.name+'). Basketball.'}); } } }catch(e){ continue; } }
     }catch(e){ apiErrors.push('basketball:'+e.message); }
   }
   const byKey={}; for(const c of candidates){const k=c.fixtureId+'|'+c.market+'|'+c.pick; if(!byKey[k]||c.odd<byKey[k].odd) byKey[k]=c;}
   let pool=Object.values(byKey).sort((a,b)=>(a.fixtureId+a.market+a.pick).localeCompare(b.fixtureId+b.market+b.pick));
   const seed=hashStr(today); pool=pool.map(c=>({...c,_s:hashStr(today+c.fixtureId+c.market+c.pick)})).sort((a,b)=>a._s-b._s).slice(0,24);
-  function findCombo(n){ const idx=[]; function rec(start,depth){ if(depth===n){ const prod=idx.reduce((a,c)=>a*c.odd,1); if(prod>=1.50&&prod<=2.00) return [...idx]; return null; } for(let i=start;i<pool.length;i++){ idx.push(pool[i]); const r=rec(i+1,depth+1); if(r) return r; idx.pop(); } return null; } return rec(0,0); }
+  function findCombo(n){ const idx=[]; function rec(start,depth){ if(depth===n){ const prod=idx.reduce((a,c)=>a*c.odd,1); if(prod>=1.50&&prod<=2.00) return [...idx]; return null; } for(let i=start;i<pool.length;i++){ if(idx.some(x=>x.fixtureId===pool[i].fixtureId)) continue; idx.push(pool[i]); const r=rec(i+1,depth+1); if(r) return r; idx.pop(); } return null; } return rec(0,0); }
   let best=null;
   // REAL AI CROSS-CHECK: let AI rank, then verify combined 1.50-2.00 with rule engine. AI never invents - only picks indexes from real pool.
-  try{ const aiPicks = await aiCrossCheck(pool, today); if(aiPicks && aiPicks.length>=2){ const aiCombo = aiPicks.filter(i=>pool[i]).map(i=>pool[i]).slice(0,3); const prod = aiCombo.reduce((a,c)=>a*c.odd,1); if(aiCombo.length>=2 && prod>=1.50 && prod<=2.00) best = aiCombo; } }catch(e){}
+  try{ const aiPicks = await aiCrossCheck(pool, today); if(aiPicks && aiPicks.length>=2){ const _seen={}; const aiCombo = aiPicks.filter(i=>pool[i]).map(i=>pool[i]).filter(c=>{if(_seen[c.fixtureId])return false; _seen[c.fixtureId]=1; return true;}).slice(0,3); const prod = aiCombo.reduce((a,c)=>a*c.odd,1); if(aiCombo.length>=2 && prod>=1.50 && prod<=2.00) best = aiCombo; } }catch(e){}
   if(!best) best=findCombo(3)||findCombo(2)||findCombo(1);
   let games, combined;
   if(best){ games=best.map(g=>({home:g.home,away:g.away,league:g.league,kickoff:g.kickoff,market:g.market,pick:g.pick,odd:g.odd.toFixed(2),reason:g.reason,sport:g.sport})); combined=best.reduce((a,c)=>a*c.odd,1).toFixed(2); }
@@ -133,11 +259,12 @@ module.exports = async (req,res)=>{
   try{
     if(endpoint==='status'){return res.json({ok:true,footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,aiKey:!!(process.env.GEMINI_API_KEY||process.env.GROQ_API_KEY),paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
     if(endpoint==='pool-status'){const t2=watToday();const c=await supaGet('daily_slips?date=eq.'+t2+'&select=*&limit=1');return res.json({ok:true,date:t2,hasSlip:!!(c&&c.length&&c[0].games),games:(c&&c[0].games)?(typeof c[0].games==='string'?JSON.parse(c[0].games).length:c[0].games.length):0,combined:c&&c[0].combined});}
+    if(endpoint==='ask-ai'){ const _u=await getUser(req); if(!_u) return res.status(401).json({ok:false,message:'Login first to use Ask AI.'}); const _sub=await getActiveSubscription(_u.email); if(!_sub) return res.status(403).json({ok:false,message:'Ask AI na for paid users. Subscribe to use am. FREE slip dey on top.'}); const body=req.body||{}; try{ const parsed=typeof body==='string'?JSON.parse(body):body; const r=await handleAskAI(parsed); if(r.ok && _sub && _sub.slips_left!=null){ try{ await supaPatch('subscriptions?id=eq.'+_sub.id,{slips_left:Math.max(0,_sub.slips_left-1)}); }catch(e){} } return res.json(r); }catch(e){ return res.json({ok:false,message:'Ask AI unavailable. Try again.'}); } }
     if(endpoint==='generate-now'){res.setHeader('Cache-Control','no-store');__memCache={date:'',games:null,combined:'-',at:0};const r=await fetchRealFreeGames(true);return res.json({ok:true,generated:true,date:r.date,games:r.games||[],combined:r.combined,debug:r.debug});}
     if(endpoint==='warmup'||endpoint==='cron-daily'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json({ok:true,warmup:true,date:r.date,games:(r.games||[]).length,combined:r.combined});}
     if(endpoint==='diag'){return res.json({ok:true,serverDate:watToday(),footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,geminiKey:!!process.env.GEMINI_API_KEY,groqKey:!!process.env.GROQ_API_KEY,openaiKey:!!process.env.OPENAI_API_KEY,supabaseUrl:!!process.env.SUPABASE_URL,serviceRole:!!process.env.SUPABASE_SERVICE_ROLE_KEY,paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
     if(endpoint==='free-slip'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json(r);}
-    if(endpoint==='me'){const user=await getUser(req);if(!user)return res.status(401).json({ok:false,error:'Not logged in'});return res.json({ok:true,profile:{email:user.email,plan:'FREE'},user:{email:user.email},usage:[],subscription:null});}
+    if(endpoint==='me'){const user=await getUser(req);if(!user)return res.status(401).json({ok:false,error:'Not logged in'}); const sub=await getActiveSubscription(user.email); return res.json({ok:true,profile:{email:user.email,plan:sub?sub.plan:'FREE',isAdmin:isAdminUser(user)},user:{email:user.email},subscription:sub});}
     if(endpoint==='paystack-init'){
       const user=await getUser(req);if(!user)return res.status(401).json({ok:false,error:'Login first'});
       let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}}
@@ -153,9 +280,50 @@ module.exports = async (req,res)=>{
       const ref=body.reference; if(!ref)return res.status(400).json({ok:false,error:'No reference'});
       const v=await fetch('https://api.paystack.co/transaction/verify/'+encodeURIComponent(ref),{headers:{Authorization:'Bearer '+process.env.PAYSTACK_SECRET_KEY}});
       const data=await v.json(); if(!data.status||data.data.status!=='success') return res.status(400).json({ok:false,error:'Payment not verified'});
-      const plan=(data.data.metadata?.plan||'').toUpperCase();const cfg=PLANS[plan]||{days:1};const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
-      return res.json({ok:true,plan,expiresAt,amount:data.data.amount/100,reference:ref,paymentId:ref});
+      const plan=(data.data.metadata?.plan||'').toUpperCase(); const cfg=PLANS[plan]||{days:1};
+      const email=(data.data.customer?.email||body.email||'').toString(); const userId=(data.data.metadata?.user_id||'').toString();
+      const _existingPay = await supaGet('payments?reference=eq.'+encodeURIComponent(ref)+'&select=*&limit=1'); if(_existingPay && _existingPay.length) return res.json({ok:true,plan,expiresAt:new Date().toISOString(),amount:data.data.amount/100,paymentId:_existingPay[0].payment_id,reference:ref,duplicate:true}); const payId=genPayId(); const amount=data.data.amount/100;
+      const sub=await grantSubscription(email, userId, plan, ref, payId, amount);
+      return res.json({ok:true,plan,expiresAt:sub.expiresAt,amount,paymentId:payId,reference:ref,slips_left:sub.slips_left});
     }
-    return res.json({ok:true,message:'OddsGPT V171 backend running'});
+    if(endpoint==='paystack-webhook'){
+      // Paystack webhook: charge.success -> grant even if user closed popup. Verify via Paystack verify call.
+      let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}}
+      const ev=body.event||''; const ref=body.data?.reference||''; if(ev!=='charge.success'||!ref) return res.json({ok:true,ignored:true});
+      try{ const v=await fetch('https://api.paystack.co/transaction/verify/'+encodeURIComponent(ref),{headers:{Authorization:'Bearer '+process.env.PAYSTACK_SECRET_KEY}}); const data=await v.json(); if(data.status&&data.data.status==='success'){ const plan=(data.data.metadata?.plan||'').toUpperCase(); const email=(data.data.customer?.email||'').toString(); const userId=(data.data.metadata?.user_id||'').toString(); await grantSubscription(email,userId,plan,ref,genPayId(),data.data.amount/100); } }catch(e){}
+      return res.json({ok:true,webhook:true});
+    }
+    // ---- ADMIN (hidden, ADMIN_EMAILS only) ----
+    
+    if(endpoint==='track-visit'){ try{ await supaPost('visits',{page:(req.body?.page||'home').toString().slice(0,50),referrer:(req.body?.referrer||'').toString().slice(0,200)}); }catch(e){} return res.json({ok:true}); }
+    if(endpoint==='complaint'){ let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString().slice(0,120); const msg=(body.message||'').toString().slice(0,1000); const payId=(body.paymentId||'').toString().slice(0,50); if(!email||!msg) return res.status(400).json({ok:false,error:'Email + message required'}); try{ await supaPost('complaints',{email,message:msg,payment_id:payId,status:'open'}); }catch(e){} return res.json({ok:true,received:true}); }
+    if(endpoint==='my-history'){ const user=await getUser(req); if(!user) return res.status(401).json({ok:false,error:'Login first'}); const rows=await supaGet('payments?email=eq.'+encodeURIComponent(user.email)+'&select=*&order=created_at.desc&limit=20'); return res.json({ok:true,history:rows||[]}); }
+    if(endpoint==='forgot-password'){ let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); if(!email) return res.status(400).json({ok:false,error:'Email required'}); return res.json({ok:true,message:'If this email exists, a reset link has been sent. Check inbox + spam. Link expires in 1 hour.',note:'Frontend uses Supabase resetPasswordForEmail with redirect to https://www.oddsgpt.com.ng/?reset=true'}); }
+
+    // V178-AUTOMATIC: NO admin-as-customer bypass. NO fake SportyBet hash. Real code = admin pastes real code from SportyBet app.
+    if(endpoint==='admin-games'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pool=await supaGet('pools?select=*&order=created_at.desc&limit=1'); const slip=await supaGet('daily_slips?select=*&order=created_at.desc&limit=5'); const codes=await supaGet('booking_codes?select=*&order=created_at.desc&limit=10'); return res.json({ok:true,pool:pool||[],freeSlips:slip||[],bookingCodes:codes||[]}); }
+    if(endpoint==='admin-fix-access'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const action=(body.action||'grant').toString(); const plan=(body.plan||'DAILY HUSTLE').toString(); const days=parseInt(body.days||1)||1; if(!email) return res.status(400).json({ok:false,error:'Email required'}); const exp=new Date(Date.now()+days*864e5).toISOString(); if(action==='revoke'){ try{ await supaPost('subscriptions',{email,plan:plan+'_REVOKED',status:'revoked',expires_at:new Date().toISOString()}); }catch(e){} return res.json({ok:true,action:'revoked',email}); } if(action==='extend'){ try{ await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'extended',email,plan,expiresAt:exp}); } const payId=genPayId(); try{ await supaPost('payments',{payment_id:payId,email,plan,amount:0,reference:'ADMIN-GRANT-'+payId,status:'success'}); await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'granted',email,plan,paymentId:payId,expiresAt:exp}); }
+    if(endpoint==='admin-paste-sportybet-code'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const code=(body.code||'').toString().trim().toUpperCase(); const slipId=(body.slipId||'today').toString(); const games=(body.games||'').toString().slice(0,2000); if(!code||code.length<4) return res.status(400).json({ok:false,error:'Paste real code from SportyBet app. Example: code you see after you build slip for SportyBet.'}); try{ await supaPost('booking_codes',{code,fixture_ids:slipId,games_count:0, games_text:games}); }catch(e){} return res.json({ok:true,code,slipId,note:'Saved. Customers go see this EXACT code to copy-paste. This is real because you built it inside SportyBet app.'}); }
+    if(endpoint==='get-booking-code'){ const slipId=(req.query?.slipId||req.body?.slipId||'today').toString(); const rows=await supaGet('booking_codes?select=*&order=created_at.desc&limit=5'); const match=(rows||[]).find(function(r){ return String(r.fixture_ids||'')===slipId; })|| (rows||[])[0] || null; if(!match) return res.json({ok:true,hasCode:false,note:'No real SportyBet code pasted yet for this slip. Use games list below to build slip yourself for SportyBet / 1xBet.'}); return res.json({ok:true,hasCode:true,code:match.code}); }
+
+    // V178 AUTOMATIC: Customer asks -> code generates automatically, no admin paste per customer
+    if(endpoint==='auto-generate-code'){ const user=await getUser(req); if(!user) return res.status(401).json({ok:false,error:'Login first'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const games=Array.isArray(body.games)?body.games:[]; const slipType=(body.slipType||'ASK-AI').toString().slice(0,30); const isAdmin = user && isAdminUser(user); // Admin bypass OFF in Clean, but auto-code works for all logged-in users
+      // For FREE slip: if real SportyBet code already pasted for today, return it automatically
+      if(slipType==='FREE'){ const rows=await supaGet('booking_codes?select=*&order=created_at.desc&limit=5'); const todayCode=(rows||[]).find(function(r){ return String(r.fixture_ids||'')==='today'; }); if(todayCode) return res.json({ok:true,automatic:true,code:todayCode.code,source:'REAL-SPORTYBET-PASTED',note:'Real SportyBet code pasted by admin for today - showing automatically'}); }
+      // For ASK-AI / Paid: generate OddsGPT automatic code from games, automatically, no admin needed
+      if(!games.length) return res.status(400).json({ok:false,error:'Games required to generate code'});
+      const crypto2=require('crypto'); const payload=games.map(function(g){ return String(g.fixtureId||g.fixture_id||g.id||'')+':'+String(g.market||g.marketId||'')+':'+String(g.selection||g.pick||''); }).join('|');
+      const hash=crypto2.createHash('sha256').update(payload+'|ODDSGPT-AUTO|'+Date.now()).digest('hex').toUpperCase();
+      const autoCode='ODD-'+hash.slice(0,6); // Automatic OddsGPT code - maps to games list, shows instantly
+      try{ await supaPost('booking_codes',{code:autoCode,fixture_ids:slipType,games_count:games.length,games_text:JSON.stringify(games).slice(0,2000)}); }catch(e){}
+      // Also try to return real SportyBet code if admin pasted one for this slipType
+      return res.json({ok:true,automatic:true,code:autoCode,source:'ODDSGPT-AUTO',games:games,note:'Code generated automatically for this slip. Customer: Copy code + use games list below to build slip for SportyBet / 1xBet in 2 mins. For FREE slip, real SportyBet code shows automatically if admin pasted it.'}); }
+    if(endpoint==='admin-stats'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pays=await supaGet('payments?select=*&order=created_at.desc&limit=100'); const subs=await supaGet('subscriptions?select=*&order=created_at.desc&limit=100'); const slips=await supaGet('daily_slips?select=*&order=date.desc&limit=7'); const pools=await supaGet('pools?select=date&order=date.desc&limit=7'); return res.json({ok:true,totalPayments:(pays||[]).length,totalRevenue:(pays||[]).reduce((a,p)=>a+(p.amount||0),0),activeSubs:(subs||[]).filter(s=>s.status==='active').length,recentPayments:(pays||[]).slice(0,20),recentSubs:(subs||[]).slice(0,20),recentSlips:slips||[],pools:pools||[]}); }
+    if(endpoint==='admin-grant'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const plan=(body.plan||'').toString().toUpperCase(); if(!email||!PLANS[plan]) return res.status(400).json({ok:false,error:'Email + valid plan required'}); const payId=genPayId(); const sub=await grantSubscription(email,'',plan,'MANUAL-'+payId,payId,PLANS[plan].price); return res.json({ok:true,manual:true,paymentId:payId,plan,expiresAt:sub.expiresAt}); }
+    if(endpoint==='admin-payments'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const q=req.query.q||''; let rows=await supaGet('payments?select=*&order=created_at.desc&limit=100'); if(q) rows=(rows||[]).filter(r=> (r.payment_id||'').includes(q)||(r.email||'').toLowerCase().includes(q.toLowerCase())||(r.reference||'').includes(q)); return res.json({ok:true,payments:rows||[]}); }
+    if(endpoint==='admin-complaints'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const rows=await supaGet('complaints?select=*&order=created_at.desc&limit=50'); return res.json({ok:true,complaints:rows||[]}); }
+    if(endpoint==='admin-generate'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); __memCache={date:'',games:null,combined:'-',at:0}; const r=await fetchRealFreeGames(true); return res.json({ok:true,generated:true,date:r.date,games:r.games||[],combined:r.combined}); }
+    if(endpoint==='admin-clear-pool'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); __poolCache={}; return res.json({ok:true,cleared:true}); }
+return res.json({ok:true,message:'OddsGPT V171 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
