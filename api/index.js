@@ -1,4 +1,4 @@
-// OddsGPT Backend V169 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
+// OddsGPT Backend V171 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
   FREE:{price:0,days:365,max:3,perDay:1},
@@ -10,21 +10,17 @@ const PLANS = {
   BABA:{price:5000,days:30,max:50,perDay:10,total:300},
 };
 function cors(res){res.setHeader('Access-Control-Allow-Origin','*');res.setHeader('Access-Control-Allow-Methods','GET,POST,OPTIONS');res.setHeader('Access-Control-Allow-Headers','Content-Type,Authorization');}
-function watToday(){try{const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',timeZone:'Africa/Lagos'}).formatToParts(new Date());return p.find(x=>x.type==='year').value+'-'+p.find(x=>x.type==='month').value+'-'+p.find(x=>x.type==='day').value;}catch(e){const n=new Date();return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}}
-async function getUser(req){const auth=req.headers.authorization||'';const token=auth.replace('Bearer ','');if(!token)return null;try{const r=await fetch(process.env.SUPABASE_URL+'/auth/v1/user',{headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:'Bearer '+token}});if(!r.ok)return null;return await r.json();}catch(e){return null;}}
-// REAL fixtures from API-Football - NO fake games, NO invented stats
-// --- V169: DAILY CACHED FREE SLIP - same for everyone, changes only 12AM WAT ---
-async function supaGet(path){
-  if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
-  try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY}}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
-}
+function watToday(){try{const now=new Date();const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hour12:false,timeZone:'Africa/Lagos'}).formatToParts(now);const y=p.find(x=>x.type==='year').value,mo=p.find(x=>x.type==='month').value,da=p.find(x=>x.type==='day').value,h=parseInt(p.find(x=>x.type==='hour').value,10);let d=new Date(y+'-'+mo+'-'+da+'T12:00:00');if(h<10)d.setDate(d.getDate()-1);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}catch(e){const n=new Date();return n.getFullYear()+'-'+String(n.getMonth()+1).padStart(2,'0')+'-'+String(n.getDate()).padStart(2,'0');}}
+function nextSlipChangeMs(){try{const now=new Date();const p=new Intl.DateTimeFormat('en-NG',{year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',hour12:false,timeZone:'Africa/Lagos'}).formatToParts(now);const y=p.find(x=>x.type==='year').value,mo=p.find(x=>x.type==='month').value,da=p.find(x=>x.type==='day').value,h=parseInt(p.find(x=>x.type==='hour').value,10);let target=new Date(y+'-'+mo+'-'+da+'T10:00:00+01:00');if(h>=10)target.setDate(target.getDate()+1);return target.getTime();}catch(e){return Date.now()+3600000;}}
+
 async function supaPost(path, body){
   if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
   try{const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{method:'POST',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(body)}); if(!r.ok) return null; return await r.json();}catch(e){return null;}
 }
 function hashStr(s){let h=0; for(let i=0;i<s.length;i++){h=((h<<5)-h)+s.charCodeAt(i); h|=0;} return Math.abs(h);}
-// V169: NEVER-EMPTY. Bulk odds (1 call) + generation lock + real AI cross-check + last-slip fallback
+// V171: NEVER-EMPTY. Bulk odds (1 call) + generation lock + real AI cross-check + last-slip fallback
 let __genLock = null;
+let __quotaExhaustedUntil = 0;
 let __memCache = {date:'', games:null, combined:'-', at:0};
 async function aiCrossCheck(cands, today){
   // Real AI cross-check: Gemini first, then Groq, then OpenAI. 8s timeout. If all fail -> rule engine only, never block.
@@ -55,12 +51,14 @@ async function fetchRealFreeGames(force){
   const bkey=process.env.API_BASKETBALL_KEY||key;
   const today=watToday();
   // 0) MEMORY cache: instant, no API call (skip if force = generate-now)
-  if(!force && __memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
+  if(!force && __memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
   // 1) SUPABASE cache: same slip for everyone (skip if force)
   const cached=!force ? await supaGet('daily_slips?date=eq.'+today+'&select=*&limit=1') : null;
   if(cached && cached.length && cached[0].games){
-    try{const g=typeof cached[0].games==='string'?JSON.parse(cached[0].games):cached[0].games; if(g && g.length){ __memCache={date:today,games:g,combined:cached[0].combined||'-',at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:g,combined:cached[0].combined||'-',plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
+    try{const g=typeof cached[0].games==='string'?JSON.parse(cached[0].games):cached[0].games; if(g && g.length){ __memCache={date:today,games:g,combined:cached[0].combined||'-',at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:g,combined:cached[0].combined||'-',plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
   }
+  // V171: if quota already hit in last 6h, do NOT call API again - go straight to last saved slip
+  if(Date.now() < __quotaExhaustedUntil){ try{ const last = await supaGet('daily_slips?order=date.desc&limit=1&select=*'); if(last && last.length && last[0].games){ const gg=typeof last[0].games==='string'?JSON.parse(last[0].games):last[0].games; if(gg && gg.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:gg,combined:last[0].combined||'-',plan:'FREE',cached:true,source:'last-day-fallback',quotaExhausted:true}; } }catch(e){} }
   // 2) LOCK: if another visitor already generating, wait for it instead of burning API quota (this was killing the quota)
   if(__genLock) { try{ const r = await __genLock; if(r && r.games && r.games.length) return r; }catch(e){} }
   __genLock = (async()=>{
@@ -113,15 +111,18 @@ async function fetchRealFreeGames(force){
     for(const c of pool){ if(fb.length>=3) break; if(seen[c.fixtureId]) continue; seen[c.fixtureId]=1; fb.push({home:c.home,away:c.away,league:c.league,kickoff:c.kickoff,market:c.market,pick:c.pick,odd:c.odd.toFixed(2),reason:c.reason,sport:c.sport}); }
     if(!fb.length && allFixtures.length){ for(const f of allFixtures.slice(0,3)) fb.push({home:f.home,away:f.away,league:f.league,kickoff:f.kickoff,market:'1X2',pick:'Check live odds',odd:'—',reason:'Real fixture from live provider. Check live odds before staking.',sport:f.sport}); }
     if(!fb.length){
+      // V171 QUOTA GUARD: if API says limit/quota/403, do NOT keep calling. Serve last real slip so site never empty.
+      const quotaHit = apiErrors.join(' ').toLowerCase().match(/403|rate|limit|quota|exceed|forbidden/);
+      if(quotaHit) __quotaExhaustedUntil = Date.now() + 6*3600*1000;
       // LAST RESORT: yesterday's saved slip so box NEVER empty on launch day. Better to show yesterday's real slip than empty box.
-      try{ const last = await supaGet('daily_slips?order=date.desc&limit=1&select=*'); if(last && last.length && last[0].games){ const gg=typeof last[0].games==='string'?JSON.parse(last[0].games):last[0].games; if(gg && gg.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:gg,combined:last[0].combined||'-',plan:'FREE',cached:true,source:'last-day-fallback',debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}}; } }catch(e){}
-      return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games:[],combined:'-',message:'NO_FIXTURES',debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}};
+      try{ const last = await supaGet('daily_slips?order=date.desc&limit=1&select=*'); if(last && last.length && last[0].games){ const gg=typeof last[0].games==='string'?JSON.parse(last[0].games):last[0].games; if(gg && gg.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:gg,combined:last[0].combined||'-',plan:'FREE',cached:true,source:'last-day-fallback',quotaExhausted:!!quotaHit,debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}}; } }catch(e){}
+      return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:[],combined:'-',message:'NO_FIXTURES',debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}};
     }
     games=fb; combined='-';
   }
   try{ await supaPost('daily_slips', {date:today,games:JSON.stringify(games),combined:combined}); }catch(e){}
   __memCache={date:today,games,combined,at:Date.now()};
-  return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),games,combined,plan:'FREE',cached:false,debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}};
+  return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games,combined,plan:'FREE',cached:false,debug:{fixtureCount:allFixtures.length,candidateCount:candidates.length,apiErrors}};
   })();
   try{ const out = await __genLock; return out; } finally{ __genLock = null; }
 }
@@ -155,6 +156,6 @@ module.exports = async (req,res)=>{
       const plan=(data.data.metadata?.plan||'').toUpperCase();const cfg=PLANS[plan]||{days:1};const expiresAt=new Date(Date.now()+cfg.days*24*3600*1000).toISOString();
       return res.json({ok:true,plan,expiresAt,amount:data.data.amount/100,reference:ref,paymentId:ref});
     }
-    return res.json({ok:true,message:'OddsGPT V169 backend running'});
+    return res.json({ok:true,message:'OddsGPT V171 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
