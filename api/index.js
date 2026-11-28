@@ -1,3 +1,4 @@
+
 // OddsGPT Backend V171 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
@@ -48,7 +49,25 @@ async function aiCrossCheck(cands, today){
   return null;
 }
 
-// ---- V178-AUTOMATIC POOL-ONCE + ASK AI ----
+async function supaGet(path){
+  if(!process.env.SUPABASE_URL||!process.env.SUPABASE_SERVICE_ROLE_KEY) return null;
+  try{ const r=await fetch(process.env.SUPABASE_URL+'/rest/v1/'+path,{method:'GET',headers:{apikey:process.env.SUPABASE_SERVICE_ROLE_KEY,Authorization:'Bearer '+process.env.SUPABASE_SERVICE_ROLE_KEY,'Content-Type':'application/json'}}); if(!r.ok) return null; const j=await r.json(); return Array.isArray(j)?j:j; }catch(e){ return null; }
+}
+async function getUser(req){
+  try{
+    const auth = (req.headers && (req.headers.authorization || req.headers.Authorization)) || '';
+    const token = auth.replace('Bearer ','').trim();
+    if(!token) return null;
+    if(!process.env.SUPABASE_URL||!process.env.SUPABASE_ANON_KEY) return null;
+    const r=await fetch(process.env.SUPABASE_URL+'/auth/v1/user',{method:'GET',headers:{apikey:process.env.SUPABASE_ANON_KEY,Authorization:'Bearer '+token}});
+    if(!r.ok) return null;
+    const j=await r.json();
+    if(!j || !j.email) return null;
+    return {email:j.email.toLowerCase(), id:j.id, user_id:j.id};
+  }catch(e){ return null; }
+}
+
+// ---- V180-FINAL-FIX POOL-ONCE + ASK AI ----
 // Pool = fixtures+odds for one date, fetched once, cached in memory + Supabase daily_slips pool row.
 // getPoolForDates(dates[]) returns combined candidates for those dates, all future kickoff, distinct fixtures enforced at pick time.
 // Max 7 days: dates must be within today..today+7, else rejected.
@@ -180,8 +199,8 @@ async function fetchRealFreeGames(force){
   if(!force && __memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
   // 1) SUPABASE cache: same slip for everyone (skip if force)
   const cached=!force ? await supaGet('daily_slips?date=eq.'+today+'&select=*&limit=1') : null;
-  if(cached && cached.length && cached[0].games){
-    try{const g=typeof cached[0].games==='string'?JSON.parse(cached[0].games):cached[0].games; if(g && g.length){ __memCache={date:today,games:g,combined:cached[0].combined||'-',at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:g,combined:cached[0].combined||'-',plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
+  if(cached && cached.length && (cached[0].games || cached[0].slip)){
+    try{const _raw=cached[0].games||cached[0].slip; const g=typeof _raw==='string'?JSON.parse(_raw):_raw; const _games = Array.isArray(g)?g:(g && g.games?g.games:g); const _combined = cached[0].combined || (g && g.combined) || '-'; if(_games && _games.length){ __memCache={date:today,games:_games,combined:_combined,at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:_games,combined:_combined,plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
   }
   // V171: if quota already hit in last 6h, do NOT call API again - go straight to last saved slip
   if(Date.now() < __quotaExhaustedUntil){ try{ const last = await supaGet('daily_slips?order=date.desc&limit=1&select=*'); if(last && last.length && last[0].games){ const gg=typeof last[0].games==='string'?JSON.parse(last[0].games):last[0].games; if(gg && gg.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:gg,combined:last[0].combined||'-',plan:'FREE',cached:true,source:'last-day-fallback',quotaExhausted:true}; } }catch(e){} }
@@ -300,7 +319,7 @@ module.exports = async (req,res)=>{
     if(endpoint==='my-history'){ const user=await getUser(req); if(!user) return res.status(401).json({ok:false,error:'Login first'}); const rows=await supaGet('payments?email=eq.'+encodeURIComponent(user.email)+'&select=*&order=created_at.desc&limit=20'); return res.json({ok:true,history:rows||[]}); }
     if(endpoint==='forgot-password'){ let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); if(!email) return res.status(400).json({ok:false,error:'Email required'}); return res.json({ok:true,message:'If this email exists, a reset link has been sent. Check inbox + spam. Link expires in 1 hour.',note:'Frontend uses Supabase resetPasswordForEmail with redirect to https://www.oddsgpt.com.ng/?reset=true'}); }
 
-    // V178-AUTOMATIC: NO admin-as-customer bypass. NO fake SportyBet hash. Real code = admin pastes real code from SportyBet app.
+    // V180-FINAL-FIX: NO admin-as-customer bypass. NO fake SportyBet hash. Real code = admin pastes real code from SportyBet app.
     if(endpoint==='admin-games'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pool=await supaGet('pools?select=*&order=created_at.desc&limit=1'); const slip=await supaGet('daily_slips?select=*&order=created_at.desc&limit=5'); const codes=await supaGet('booking_codes?select=*&order=created_at.desc&limit=10'); return res.json({ok:true,pool:pool||[],freeSlips:slip||[],bookingCodes:codes||[]}); }
     if(endpoint==='admin-fix-access'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const action=(body.action||'grant').toString(); const plan=(body.plan||'DAILY HUSTLE').toString(); const days=parseInt(body.days||1)||1; if(!email) return res.status(400).json({ok:false,error:'Email required'}); const exp=new Date(Date.now()+days*864e5).toISOString(); if(action==='revoke'){ try{ await supaPost('subscriptions',{email,plan:plan+'_REVOKED',status:'revoked',expires_at:new Date().toISOString()}); }catch(e){} return res.json({ok:true,action:'revoked',email}); } if(action==='extend'){ try{ await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'extended',email,plan,expiresAt:exp}); } const payId=genPayId(); try{ await supaPost('payments',{payment_id:payId,email,plan,amount:0,reference:'ADMIN-GRANT-'+payId,status:'success'}); await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'granted',email,plan,paymentId:payId,expiresAt:exp}); }
     if(endpoint==='admin-paste-sportybet-code'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const code=(body.code||'').toString().trim().toUpperCase(); const slipId=(body.slipId||'today').toString(); const games=(body.games||'').toString().slice(0,2000); if(!code||code.length<4) return res.status(400).json({ok:false,error:'Paste real code from SportyBet app. Example: code you see after you build slip for SportyBet.'}); try{ await supaPost('booking_codes',{code,fixture_ids:slipId,games_count:0, games_text:games}); }catch(e){} return res.json({ok:true,code,slipId,note:'Saved. Customers go see this EXACT code to copy-paste. This is real because you built it inside SportyBet app.'}); }
@@ -318,6 +337,9 @@ module.exports = async (req,res)=>{
       try{ await supaPost('booking_codes',{code:autoCode,fixture_ids:slipType,games_count:games.length,games_text:JSON.stringify(games).slice(0,2000)}); }catch(e){}
       // Also try to return real SportyBet code if admin pasted one for this slipType
       return res.json({ok:true,automatic:true,code:autoCode,source:'ODDSGPT-AUTO',games:games,note:'Code generated automatically for this slip. Customer: Copy code + use games list below to build slip for SportyBet / 1xBet in 2 mins. For FREE slip, real SportyBet code shows automatically if admin pasted it.'}); }
+
+    if(endpoint==='force-free'){ res.setHeader('Cache-Control','no-store'); try{ const r=await fetchRealFreeGames(true); if(r && r.games && r.games.length) return res.json({ok:true,emergency:true,...r}); }catch(e){} return res.json({ok:false,error:'Could not generate. Check diag: API keys + Supabase.'}); }
+    if(endpoint==='fix-daily-slips'){ return res.json({ok:true,sql:"alter table public.daily_slips add column if not exists games jsonb; alter table public.daily_slips add column if not exists combined text; alter table public.daily_slips add column if not exists slip jsonb;"}); }
     if(endpoint==='admin-stats'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pays=await supaGet('payments?select=*&order=created_at.desc&limit=100'); const subs=await supaGet('subscriptions?select=*&order=created_at.desc&limit=100'); const slips=await supaGet('daily_slips?select=*&order=date.desc&limit=7'); const pools=await supaGet('pools?select=date&order=date.desc&limit=7'); return res.json({ok:true,totalPayments:(pays||[]).length,totalRevenue:(pays||[]).reduce((a,p)=>a+(p.amount||0),0),activeSubs:(subs||[]).filter(s=>s.status==='active').length,recentPayments:(pays||[]).slice(0,20),recentSubs:(subs||[]).slice(0,20),recentSlips:slips||[],pools:pools||[]}); }
     if(endpoint==='admin-grant'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const plan=(body.plan||'').toString().toUpperCase(); if(!email||!PLANS[plan]) return res.status(400).json({ok:false,error:'Email + valid plan required'}); const payId=genPayId(); const sub=await grantSubscription(email,'',plan,'MANUAL-'+payId,payId,PLANS[plan].price); return res.json({ok:true,manual:true,paymentId:payId,plan,expiresAt:sub.expiresAt}); }
     if(endpoint==='admin-payments'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const q=req.query.q||''; let rows=await supaGet('payments?select=*&order=created_at.desc&limit=100'); if(q) rows=(rows||[]).filter(r=> (r.payment_id||'').includes(q)||(r.email||'').toLowerCase().includes(q.toLowerCase())||(r.reference||'').includes(q)); return res.json({ok:true,payments:rows||[]}); }
@@ -327,3 +349,4 @@ module.exports = async (req,res)=>{
 return res.json({ok:true,message:'OddsGPT V171 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
+
