@@ -1,4 +1,3 @@
-
 // OddsGPT Backend V171 - REAL games + REAL prediction - Deploy as api/index.js in oddsgpt-backend repo
 // Env in Vercel: SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_SERVICE_ROLE_KEY, PAYSTACK_SECRET_KEY, PAYSTACK_PUBLIC_KEY, API_FOOTBALL_KEY, API_BASKETBALL_KEY, ADMIN_EMAILS
 const PLANS = {
@@ -67,7 +66,7 @@ async function getUser(req){
   }catch(e){ return null; }
 }
 
-// ---- V180-FINAL-FIX POOL-ONCE + ASK AI ----
+// ---- V181-REQUIRED-CORRECTIONS-FINAL POOL-ONCE + ASK AI ----
 // Pool = fixtures+odds for one date, fetched once, cached in memory + Supabase daily_slips pool row.
 // getPoolForDates(dates[]) returns combined candidates for those dates, all future kickoff, distinct fixtures enforced at pick time.
 // Max 7 days: dates must be within today..today+7, else rejected.
@@ -191,6 +190,29 @@ async function getActiveSubscription(email){
   try{ const rows=await supaGet('subscriptions?email=eq.'+encodeURIComponent(email)+'&status=eq.active&select=*&order=created_at.desc&limit=5'); if(!rows||!rows.length) return null; const now=Date.now(); for(const r of rows){ if(new Date(r.expires_at).getTime()>now && (r.slips_left==null||r.slips_left>0)) return r; } return null; }catch(e){ return null; }
 }
 
+
+// V181: ONE free game, 1.50-2.00 enforced, same for all, 10AM WAT only
+function v181ValidateFreeGame(games){
+  if(!Array.isArray(games)) return null;
+  const one = games.slice(0,1);
+  if(!one.length) return null;
+  const g = one[0];
+  const odd = parseFloat(g.odd || g.odds || g.combined || 0);
+  if(!(odd >= 1.50 && odd <= 2.00)) return null;
+  g.combined = String(odd.toFixed(2));
+  g.odd = g.combined;
+  return {games:one, combined:g.combined};
+}
+async function v181SaveFreeSlip(date, validated, source){
+  try{
+    const g = validated.games[0];
+    const row = {date, games: validated.games, combined: validated.combined, slip: validated.games, bookmaker: g.bookmaker||g.book||'Marathon Bet', selected_at: new Date().toISOString(), source: source||'cron-10am'};
+    const ex = await supaGet('daily_slips?date=eq.'+date+'&select=*&limit=1');
+    if(ex && ex.length){ await supaPatch('daily_slips?date=eq.'+date, row); return row; }
+    await supaPost('daily_slips', row); return row;
+  }catch(e){ return null; }
+}
+
 async function fetchRealFreeGames(force){
   const key=process.env.API_FOOTBALL_KEY;
   const bkey=process.env.API_BASKETBALL_KEY||key;
@@ -199,8 +221,8 @@ async function fetchRealFreeGames(force){
   if(!force && __memCache.date===today && __memCache.games && __memCache.games.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:__memCache.games,combined:__memCache.combined,plan:'FREE',cached:true,source:'memory'};
   // 1) SUPABASE cache: same slip for everyone (skip if force)
   const cached=!force ? await supaGet('daily_slips?date=eq.'+today+'&select=*&limit=1') : null;
-  if(cached && cached.length && (cached[0].games || cached[0].slip)){
-    try{const _raw=cached[0].games||cached[0].slip; const g=typeof _raw==='string'?JSON.parse(_raw):_raw; const _games = Array.isArray(g)?g:(g && g.games?g.games:g); const _combined = cached[0].combined || (g && g.combined) || '-'; if(_games && _games.length){ __memCache={date:today,games:_games,combined:_combined,at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:_games,combined:_combined,plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
+  if(cached && cached.length && cached[0].games){
+    try{const g=typeof cached[0].games==='string'?JSON.parse(cached[0].games):cached[0].games; if(g && g.length){ __memCache={date:today,games:g,combined:cached[0].combined||'-',at:Date.now()}; return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:g,combined:cached[0].combined||'-',plan:'FREE',cached:true,source:'supabase'};}}catch(e){}
   }
   // V171: if quota already hit in last 6h, do NOT call API again - go straight to last saved slip
   if(Date.now() < __quotaExhaustedUntil){ try{ const last = await supaGet('daily_slips?order=date.desc&limit=1&select=*'); if(last && last.length && last[0].games){ const gg=typeof last[0].games==='string'?JSON.parse(last[0].games):last[0].games; if(gg && gg.length) return {ok:true,date:today,serverDate:today,serverNow:new Date().toISOString(),serverTimeMs:Date.now(),nextChangeMs:nextSlipChangeMs(),games:gg,combined:last[0].combined||'-',plan:'FREE',cached:true,source:'last-day-fallback',quotaExhausted:true}; } }catch(e){} }
@@ -279,10 +301,32 @@ module.exports = async (req,res)=>{
     if(endpoint==='status'){return res.json({ok:true,footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,aiKey:!!(process.env.GEMINI_API_KEY||process.env.GROQ_API_KEY),paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
     if(endpoint==='pool-status'){const t2=watToday();const c=await supaGet('daily_slips?date=eq.'+t2+'&select=*&limit=1');return res.json({ok:true,date:t2,hasSlip:!!(c&&c.length&&c[0].games),games:(c&&c[0].games)?(typeof c[0].games==='string'?JSON.parse(c[0].games).length:c[0].games.length):0,combined:c&&c[0].combined});}
     if(endpoint==='ask-ai'){ const _u=await getUser(req); if(!_u) return res.status(401).json({ok:false,message:'Login first to use Ask AI.'}); const _sub=await getActiveSubscription(_u.email); if(!_sub) return res.status(403).json({ok:false,message:'Ask AI na for paid users. Subscribe to use am. FREE slip dey on top.'}); const body=req.body||{}; try{ const parsed=typeof body==='string'?JSON.parse(body):body; const r=await handleAskAI(parsed); if(r.ok && _sub && _sub.slips_left!=null){ try{ await supaPatch('subscriptions?id=eq.'+_sub.id,{slips_left:Math.max(0,_sub.slips_left-1)}); }catch(e){} } return res.json(r); }catch(e){ return res.json({ok:false,message:'Ask AI unavailable. Try again.'}); } }
-    if(endpoint==='generate-now'){res.setHeader('Cache-Control','no-store');__memCache={date:'',games:null,combined:'-',at:0};const r=await fetchRealFreeGames(true);return res.json({ok:true,generated:true,date:r.date,games:r.games||[],combined:r.combined,debug:r.debug});}
-    if(endpoint==='warmup'||endpoint==='cron-daily'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json({ok:true,warmup:true,date:r.date,games:(r.games||[]).length,combined:r.combined});}
+    if(endpoint==='generate-now'){ const _au=await getUser(req); if(!_au||!isAdminUser(_au)) return res.status(403).json({ok:false,error:'Admin only. FREE game is selected by cron at 10:00 AM WAT.'}); res.setHeader('Cache-Control','no-store'); __memCache={date:'',games:null,combined:'-',at:0}; const r=await fetchRealFreeGames(true); const _vv = r && r.games ? v181ValidateFreeGame(r.games) : null; if(!_vv) return res.json({ok:false,error:'No qualifying 1.50-2.00 game found. Not published.'}); await v181SaveFreeSlip(r.date,_vv,'admin-generate'); return res.json({ok:true,generated:true,date:r.date,games:_vv.games,combined:_vv.combined}); }
+    if(endpoint==='cron-daily'||endpoint==='warmup'){
+      res.setHeader('Cache-Control','no-store');
+      const _today2 = watToday();
+      const _ex2 = await supaGet('daily_slips?date=eq.'+_today2+'&select=*&limit=1');
+      if(_ex2 && _ex2.length && _ex2[0].games){ try{ const _gg = typeof _ex2[0].games==='string'?JSON.parse(_ex2[0].games):_ex2[0].games; const _arr = Array.isArray(_gg)?_gg:(_gg&&_gg.games?_gg.games:[]); if(_arr.length){ return res.json({ok:true,cron:true,date:_today2,already_exists:true,combined:_ex2[0].combined||'',count:1}); } }catch(e){} }
+      const r=await fetchRealFreeGames(true);
+      const _vv2 = r && r.games ? v181ValidateFreeGame(r.games) : null;
+      if(!_vv2) return res.json({ok:false,cron:true,date:_today2,error:'No qualifying 1.50-2.00 game found. Not published.'});
+      await v181SaveFreeSlip(_today2,_vv2,'cron-10am');
+      return res.json({ok:true,cron:true,date:_today2,already_exists:false,combined:_vv2.combined,count:1,selected_at:new Date().toISOString()});
+    }
     if(endpoint==='diag'){return res.json({ok:true,serverDate:watToday(),footballKey:!!process.env.API_FOOTBALL_KEY,basketballKey:!!process.env.API_BASKETBALL_KEY,geminiKey:!!process.env.GEMINI_API_KEY,groqKey:!!process.env.GROQ_API_KEY,openaiKey:!!process.env.OPENAI_API_KEY,supabaseUrl:!!process.env.SUPABASE_URL,serviceRole:!!process.env.SUPABASE_SERVICE_ROLE_KEY,paystackKey:!!process.env.PAYSTACK_SECRET_KEY});}
-    if(endpoint==='free-slip'){res.setHeader('Cache-Control','no-store');const r=await fetchRealFreeGames();return res.json(r);}
+    if(endpoint==='free-slip'){
+      res.setHeader('Cache-Control','no-store');
+      const _uFree = await getUser(req);
+      if(!_uFree) return res.status(401).json({ok:false,error:'Login required to view FREE game.'});
+      const _today = watToday();
+      const _cached = await supaGet('daily_slips?date=eq.'+_today+'&select=*&limit=1');
+      if(!_cached || !_cached.length) return res.json({ok:false,error:'No FREE game yet for today. Check back after 10:00 AM WAT.',date:_today});
+      let _g; try{ _g = typeof _cached[0].games==='string'?JSON.parse(_cached[0].games):_cached[0].games; if(_g && _g.games) _g=_g.games; }catch(e){ _g=null; }
+      if(!_g || !_g.length) return res.json({ok:false,error:'No FREE game yet for today.',date:_today});
+      const _v = v181ValidateFreeGame(_g);
+      if(!_v) return res.json({ok:false,error:'FREE game does not meet 1.50-2.00. Admin to fix.',date:_today});
+      return res.json({ok:true,date:_today,serverDate:_today,games:_v.games,combined:_v.combined,plan:'FREE',source:'daily_slips',bookmaker:_cached[0].bookmaker||_v.games[0].bookmaker||'Marathon Bet',selected_at:_cached[0].selected_at||null});
+    }
     if(endpoint==='me'){const user=await getUser(req);if(!user)return res.status(401).json({ok:false,error:'Not logged in'}); const sub=await getActiveSubscription(user.email); return res.json({ok:true,profile:{email:user.email,plan:sub?sub.plan:'FREE',isAdmin:isAdminUser(user)},user:{email:user.email},subscription:sub});}
     if(endpoint==='paystack-init'){
       const user=await getUser(req);if(!user)return res.status(401).json({ok:false,error:'Login first'});
@@ -292,6 +336,7 @@ module.exports = async (req,res)=>{
       const reference='ODD-'+Date.now()+'-'+Math.floor(Math.random()*100000);
       const init=await fetch('https://api.paystack.co/transaction/initialize',{method:'POST',headers:{Authorization:'Bearer '+process.env.PAYSTACK_SECRET_KEY,'Content-Type':'application/json'},body:JSON.stringify({email:user.email,amount:cfg.price*100,reference,callback_url:'https://oddsgpt.com.ng/',metadata:{plan,user_id:user.id}})});
       const data=await init.json(); if(!data.status) return res.status(400).json({ok:false,error:data.message||'Paystack init failed'});
+      try{ await supaPost('payments',{email:user.email,plan,amount:cfg.price,reference, payment_id:'PAY-'+reference, paystack_transaction_id:null, status:'pending', created_at:new Date().toISOString()}); }catch(e){}
       return res.json({ok:true,publicKey:process.env.PAYSTACK_PUBLIC_KEY,amount:cfg.price,reference,authorization_url:data.data.authorization_url,days:cfg.days});
     }
     if(endpoint==='paystack-verify'){
@@ -319,7 +364,7 @@ module.exports = async (req,res)=>{
     if(endpoint==='my-history'){ const user=await getUser(req); if(!user) return res.status(401).json({ok:false,error:'Login first'}); const rows=await supaGet('payments?email=eq.'+encodeURIComponent(user.email)+'&select=*&order=created_at.desc&limit=20'); return res.json({ok:true,history:rows||[]}); }
     if(endpoint==='forgot-password'){ let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); if(!email) return res.status(400).json({ok:false,error:'Email required'}); return res.json({ok:true,message:'If this email exists, a reset link has been sent. Check inbox + spam. Link expires in 1 hour.',note:'Frontend uses Supabase resetPasswordForEmail with redirect to https://www.oddsgpt.com.ng/?reset=true'}); }
 
-    // V180-FINAL-FIX: NO admin-as-customer bypass. NO fake SportyBet hash. Real code = admin pastes real code from SportyBet app.
+    // V181-REQUIRED-CORRECTIONS-FINAL: NO admin-as-customer bypass. NO fake SportyBet hash. Real code = admin pastes real code from SportyBet app.
     if(endpoint==='admin-games'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pool=await supaGet('pools?select=*&order=created_at.desc&limit=1'); const slip=await supaGet('daily_slips?select=*&order=created_at.desc&limit=5'); const codes=await supaGet('booking_codes?select=*&order=created_at.desc&limit=10'); return res.json({ok:true,pool:pool||[],freeSlips:slip||[],bookingCodes:codes||[]}); }
     if(endpoint==='admin-fix-access'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const action=(body.action||'grant').toString(); const plan=(body.plan||'DAILY HUSTLE').toString(); const days=parseInt(body.days||1)||1; if(!email) return res.status(400).json({ok:false,error:'Email required'}); const exp=new Date(Date.now()+days*864e5).toISOString(); if(action==='revoke'){ try{ await supaPost('subscriptions',{email,plan:plan+'_REVOKED',status:'revoked',expires_at:new Date().toISOString()}); }catch(e){} return res.json({ok:true,action:'revoked',email}); } if(action==='extend'){ try{ await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'extended',email,plan,expiresAt:exp}); } const payId=genPayId(); try{ await supaPost('payments',{payment_id:payId,email,plan,amount:0,reference:'ADMIN-GRANT-'+payId,status:'success'}); await supaPost('subscriptions',{email,plan,status:'active',expires_at:exp}); }catch(e){} return res.json({ok:true,action:'granted',email,plan,paymentId:payId,expiresAt:exp}); }
     if(endpoint==='admin-paste-sportybet-code'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const code=(body.code||'').toString().trim().toUpperCase(); const slipId=(body.slipId||'today').toString(); const games=(body.games||'').toString().slice(0,2000); if(!code||code.length<4) return res.status(400).json({ok:false,error:'Paste real code from SportyBet app. Example: code you see after you build slip for SportyBet.'}); try{ await supaPost('booking_codes',{code,fixture_ids:slipId,games_count:0, games_text:games}); }catch(e){} return res.json({ok:true,code,slipId,note:'Saved. Customers go see this EXACT code to copy-paste. This is real because you built it inside SportyBet app.'}); }
@@ -337,9 +382,6 @@ module.exports = async (req,res)=>{
       try{ await supaPost('booking_codes',{code:autoCode,fixture_ids:slipType,games_count:games.length,games_text:JSON.stringify(games).slice(0,2000)}); }catch(e){}
       // Also try to return real SportyBet code if admin pasted one for this slipType
       return res.json({ok:true,automatic:true,code:autoCode,source:'ODDSGPT-AUTO',games:games,note:'Code generated automatically for this slip. Customer: Copy code + use games list below to build slip for SportyBet / 1xBet in 2 mins. For FREE slip, real SportyBet code shows automatically if admin pasted it.'}); }
-
-    if(endpoint==='force-free'){ res.setHeader('Cache-Control','no-store'); try{ const r=await fetchRealFreeGames(true); if(r && r.games && r.games.length) return res.json({ok:true,emergency:true,...r}); }catch(e){} return res.json({ok:false,error:'Could not generate. Check diag: API keys + Supabase.'}); }
-    if(endpoint==='fix-daily-slips'){ return res.json({ok:true,sql:"alter table public.daily_slips add column if not exists games jsonb; alter table public.daily_slips add column if not exists combined text; alter table public.daily_slips add column if not exists slip jsonb;"}); }
     if(endpoint==='admin-stats'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const pays=await supaGet('payments?select=*&order=created_at.desc&limit=100'); const subs=await supaGet('subscriptions?select=*&order=created_at.desc&limit=100'); const slips=await supaGet('daily_slips?select=*&order=date.desc&limit=7'); const pools=await supaGet('pools?select=date&order=date.desc&limit=7'); return res.json({ok:true,totalPayments:(pays||[]).length,totalRevenue:(pays||[]).reduce((a,p)=>a+(p.amount||0),0),activeSubs:(subs||[]).filter(s=>s.status==='active').length,recentPayments:(pays||[]).slice(0,20),recentSubs:(subs||[]).slice(0,20),recentSlips:slips||[],pools:pools||[]}); }
     if(endpoint==='admin-grant'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); let body=req.body||{}; if(typeof body==='string'){try{body=JSON.parse(body)}catch(e){body={}}} const email=(body.email||'').toString(); const plan=(body.plan||'').toString().toUpperCase(); if(!email||!PLANS[plan]) return res.status(400).json({ok:false,error:'Email + valid plan required'}); const payId=genPayId(); const sub=await grantSubscription(email,'',plan,'MANUAL-'+payId,payId,PLANS[plan].price); return res.json({ok:true,manual:true,paymentId:payId,plan,expiresAt:sub.expiresAt}); }
     if(endpoint==='admin-payments'){ const user=await getUser(req); if(!user||!isAdminUser(user)) return res.status(403).json({ok:false,error:'Admin only'}); const q=req.query.q||''; let rows=await supaGet('payments?select=*&order=created_at.desc&limit=100'); if(q) rows=(rows||[]).filter(r=> (r.payment_id||'').includes(q)||(r.email||'').toLowerCase().includes(q.toLowerCase())||(r.reference||'').includes(q)); return res.json({ok:true,payments:rows||[]}); }
@@ -349,4 +391,3 @@ module.exports = async (req,res)=>{
 return res.json({ok:true,message:'OddsGPT V171 backend running'});
   }catch(e){return res.status(500).json({ok:false,error:e.message||'Server error'});}
 };
-
